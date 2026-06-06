@@ -240,7 +240,7 @@ class BanballScene extends Phaser.Scene {
   private elapsed = 0;
   private lives = 3;
   private appeals = 1;
-  private giftProgress = 45;
+  private giftProgress = 0;
   private appealGiftThreshold = 100;
   private feed: FeedItem[] = [];
   private alertText: string | null = "Restricted: Harassment Policy";
@@ -578,7 +578,7 @@ class BanballScene extends Phaser.Scene {
     this.elapsed = 0;
     this.lives = 3;
     this.appeals = 1;
-    this.giftProgress = 45;
+    this.giftProgress = 0;
     this.winner = null;
     this.alertText = null;
     this.alertUntil = 0;
@@ -610,13 +610,34 @@ class BanballScene extends Phaser.Scene {
       this.createAi("ai_3", "", 980, 535, 0xffd166, null),
       this.createAi("ai_4", "", 1250, 500, 0x9b5de5, null),
     ];
-    this.balls = [
-      this.createBall("ball_1", POLICIES[0], 525, 330, 0, 0),
-      this.createBall("ball_2", POLICIES[2], 610, 470, 0, 0),
-      this.createBall("ball_3", POLICIES[1], 655, 582, 300, -115),
-      this.createBall("ball_4", POLICIES[3], 885, 600, 0, 0),
-      this.createBall("ball_5", POLICIES[4], 1165, 580, 0, 0),
-    ];
+    this.balls = this.createInitialBalls();
+  }
+
+  // Split balls evenly between the two sides; the odd ball goes to a random team.
+  private createInitialBalls(): Ball[] {
+    const total = POLICIES.length;
+    const perTeam = Math.floor(total / 2);
+    const teams: Team[] = [];
+    for (let i = 0; i < perTeam; i += 1) teams.push("human", "ai");
+    if (total % 2 === 1) teams.push(Math.random() < 0.5 ? "human" : "ai");
+
+    const placed: Record<Team, number> = { human: 0, ai: 0 };
+    const laneCount: Record<Team, number> = {
+      human: teams.filter((t) => t === "human").length,
+      ai: teams.filter((t) => t === "ai").length,
+    };
+    const top = COURT.y + 70;
+    const usableH = COURT.h - 140;
+
+    return teams.map((team, index) => {
+      const lane = placed[team];
+      placed[team] += 1;
+      const y = top + usableH * ((lane + 0.5) / laneCount[team]) + Phaser.Math.Between(-24, 24);
+      const x = team === "human"
+        ? Phaser.Math.Between(COURT.x + 90, LEFT_LIMIT - 70)
+        : Phaser.Math.Between(RIGHT_LIMIT + 70, COURT.x + COURT.w - 90);
+      return this.createBall(`ball_${index + 1}`, POLICIES[index], x, y, 0, 0);
+    });
   }
 
   private createAi(id: string, name: string, x: number, y: number, tint: number, assignedViewer: string | null): Player {
