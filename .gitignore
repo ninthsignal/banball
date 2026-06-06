@@ -1,0 +1,14 @@
+node_modules/
+dist/
+apps/*/dist/
+apps/*/node_modules/
+output/
+
+.env
+.env.*
+*.log
+npm-debug.log*
+*.tsbuildinfo
+
+progress.md
+test-actions.json

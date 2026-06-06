@@ -1,0 +1,19 @@
+{
+  "name": "banball",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/web",
+    "apps/realtime-server"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/web && npm run build -w apps/realtime-server",
+    "typecheck": "npm run typecheck -w apps/web && npm run typecheck -w apps/realtime-server",
+    "server:dev": "npm run dev -w apps/realtime-server"
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0"
+  }
+}
