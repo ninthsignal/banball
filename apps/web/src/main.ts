@@ -248,7 +248,6 @@ class BanballScene extends Phaser.Scene {
   private alertColor = 0xff3b5f;
   private alertUntil = 2600;
   private winner: "human" | "ai" | null = null;
-  private emoteSprite?: Phaser.GameObjects.Image;
   private emoteUntil = 0;
   private tiktokUsername = "";
   private streamConnected = false;
@@ -327,11 +326,6 @@ class BanballScene extends Phaser.Scene {
     this.playersLayer.setDepth(20);
     this.effectsLayer = this.add.container(0, 0);
     this.effectsLayer.setDepth(40);
-    this.emoteSprite = this.add.image(0, 0, "playerEmote");
-    this.emoteSprite.setOrigin(0.5, 1);
-    this.emoteSprite.setScale(130 / this.emoteSprite.height);
-    this.emoteSprite.setDepth(60);
-    this.emoteSprite.setVisible(false);
     this.hudLayer = this.add.graphics();
     this.hudLayer.setDepth(100);
     this.textLayer = this.add.container(0, 0);
@@ -681,7 +675,6 @@ class BanballScene extends Phaser.Scene {
   private showMenu() {
     this.mode = "menu";
     this.emoteUntil = 0;
-    this.emoteSprite?.setVisible(false);
     this.hideUsernameInput();
     this.hideSessionActionButton();
     this.hideAppealButton();
@@ -1020,7 +1013,6 @@ class BanballScene extends Phaser.Scene {
   private showGameOver(winner: "human" | "ai") {
     this.mode = "gameover";
     this.emoteUntil = 0;
-    this.emoteSprite?.setVisible(false);
     audio.play(winner === "human" ? "win" : "lose");
     this.hideUsernameInput();
     this.hideSessionActionButton();
@@ -1225,7 +1217,7 @@ class BanballScene extends Phaser.Scene {
   }
 
   private setPlayerArt(body: Phaser.GameObjects.Image, player: Player, frame: string, xScale = 1, yScale = 1) {
-    body.setFrame(frame);
+    body.setTexture("gameplaySprites", frame);
     body.setOrigin(0.5, 0.78);
     body.setFlipX(player.team === "ai");
     body.setAlpha(1);
@@ -1623,26 +1615,20 @@ class BanballScene extends Phaser.Scene {
   private triggerEmote() {
     if (this.mode !== "playing" || this.human.eliminated) return;
     this.emoteUntil = this.elapsed + 2200;
-    audio.play("emote");
+    audio.play("emote", { volume: 0.5 });
+  }
+
+  private emoting(): boolean {
+    return this.elapsed < this.emoteUntil;
   }
 
   // Vertical bob applied while giggling (0 when the emote is inactive).
   private emoteBob(): number {
-    if (this.elapsed >= this.emoteUntil) return 0;
+    if (!this.emoting()) return 0;
     return Math.abs(Math.sin(this.elapsed / 80)) * 6;
   }
 
-  private updateEmote() {
-    if (!this.emoteSprite) return;
-    const show = this.mode === "playing" && !this.human.eliminated && this.elapsed < this.emoteUntil;
-    this.emoteSprite.setVisible(show);
-    if (show) {
-      this.emoteSprite.setPosition(this.human.x, this.human.y - this.playerBaseHeight(this.human) * 0.86 - 14 - this.emoteBob());
-    }
-  }
-
   private updateActions() {
-    this.updateEmote();
     const players = [this.human, ...this.aiPlayers];
     for (const player of players) {
       const sprite = this.playerSprites.get(player.id);
@@ -1688,7 +1674,18 @@ class BanballScene extends Phaser.Scene {
         this.setPlayerArt(body, player, "player_idle", 1, 1);
       }
       if (player.action !== "hit") body.setTint(0xffffff);
-      if (player.team === "human") body.y -= this.emoteBob();
+      if (player.team === "human" && this.emoting()) {
+        // Replace the player body with the emote art so only one character shows.
+        body.setTexture("playerEmote");
+        body.setOrigin(0.5, 0.78);
+        body.setFlipX(false);
+        body.clearTint();
+        body.setAlpha(1);
+        body.setRotation(0);
+        body.x = 0;
+        body.setScale(this.playerBaseHeight(player) / body.height);
+        body.y -= this.emoteBob();
+      }
     }
     for (const ball of this.balls) {
       const sprite = this.ballSprites.get(ball.id);
