@@ -1015,7 +1015,7 @@ class BanballScene extends Phaser.Scene {
     this.winner = winner;
     this.clearMenu();
     this.redraw();
-    const label = winner === "human" ? "YOU WIN" : "STREAM RESTRICTED";
+    const label = winner === "human" ? "You're an absolute legend" : "STREAM RESTRICTED";
     this.addMenuText(label, 800, 408, 58, winner === "human" ? "#25f4ee" : "#ff3b5f", "#000000");
     this.addMenuText(winner === "human" ? "AI TEAM ELIMINATED" : "NO LIVES OR APPEALS LEFT", 800, 472, 24, "#ffffff");
     this.addMenuButton("RESTART", 800, 590, 250, 58, 0xff3b5f, () => this.startGame());

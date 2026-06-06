@@ -100,8 +100,14 @@ async function connectTikTok(session: Session, username: string) {
     return;
   }
 
+  // Ignore duplicate connect requests for the same stream while it is already
+  // connecting or connected; otherwise a second WebcastPushConnection is built
+  // and its chat/gift listeners fire alongside the first, duplicating events.
   const active = liveConnections.get(session.sessionId);
-  if (active?.username === tiktokUsername && session.tiktokConnectionStatus === "connected") {
+  if (
+    active?.username === tiktokUsername &&
+    (session.tiktokConnectionStatus === "connected" || session.tiktokConnectionStatus === "connecting")
+  ) {
     emitSessionStatus(session);
     return;
   }
@@ -167,6 +173,15 @@ async function connectTikTok(session: Session, username: string) {
 
   try {
     await connection.connect();
+    // If a newer connection superseded this one while connecting, drop this one.
+    if (liveConnections.get(session.sessionId)?.connection !== connection) {
+      try {
+        connection.disconnect();
+      } catch {
+        // Connector cleanup can throw if the socket is already gone.
+      }
+      return;
+    }
     session.tiktokConnectionStatus = "connected";
     session.lastActiveAt = Date.now();
     emitSessionStatus(session);
