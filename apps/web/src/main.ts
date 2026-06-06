@@ -104,6 +104,7 @@ type GameSnapshot = {
     difficulty: number;
     gameSpeed: number;
     tiktokUsername: string;
+    streamConnected: boolean;
   };
   giftProgress: number;
   appealGiftThreshold: number;
@@ -125,7 +126,6 @@ const POLICIES: Policy[] = [
 ];
 
 const FEED_COLORS = ["#ff3b5f", "#25f4ee", "#ffd166", "#9b5de5", "#f9844a"];
-const AI_NAMES = ["pixelgoat", "mochi_07", "catnap99", "goober42"];
 
 type ThrowDrag = {
   active: boolean;
@@ -147,6 +147,8 @@ declare global {
       reset: () => void;
       setDifficulty: (difficulty: number) => void;
       setUsername: (username: string) => void;
+      refreshSession: () => void;
+      resetAssignments: () => void;
       mockCommand: (username: string, command: string) => void;
       mockGift: (value?: number) => void;
     };
@@ -205,23 +207,19 @@ class BanballScene extends Phaser.Scene {
   private playerSprites = new Map<string, Phaser.GameObjects.Container>();
   private ballSprites = new Map<string, Phaser.GameObjects.Container>();
   private usernameInput?: HTMLInputElement;
+  private resetAssignmentsButton?: HTMLButtonElement;
   private elapsed = 0;
   private lives = 3;
   private appeals = 1;
   private giftProgress = 45;
   private appealGiftThreshold = 100;
-  private feed: FeedItem[] = [
-    { user: "pixelgoat", command: "!play", age: 5, color: "#ff3b5f" },
-    { user: "mochi_07", command: "!dodge", age: 7, color: "#25f4ee" },
-    { user: "catnap99", command: "!catch", age: 10, color: "#ffd166" },
-    { user: "goober42", command: "!throw", age: 14, color: "#9b5de5" },
-    { user: "lala_live", command: "!play", age: 16, color: "#f9844a" },
-  ];
+  private feed: FeedItem[] = [];
   private alertText: string | null = "Restricted: Harassment Policy";
   private alertColor = 0xff3b5f;
   private alertUntil = 2600;
   private winner: "human" | "ai" | null = null;
-  private tiktokUsername = "streamer";
+  private tiktokUsername = "";
+  private streamConnected = false;
   private readonly sessionId = sessionIdFromPath();
   private readonly options = { sfx: true, difficulty: 2 };
 
@@ -236,7 +234,10 @@ class BanballScene extends Phaser.Scene {
     this.createTextures();
     this.setupLayers();
     this.setupInput();
-    window.addEventListener("resize", () => this.syncUsernameInputBounds());
+    window.addEventListener("resize", () => {
+      this.syncUsernameInputBounds();
+      this.syncResetAssignmentsButtonBounds();
+    });
     this.resetGameState();
     this.showMenu();
     this.installTestHooks();
@@ -264,6 +265,8 @@ class BanballScene extends Phaser.Scene {
       reset: () => this.startGame(),
       setDifficulty: (difficulty) => this.setDifficulty(difficulty),
       setUsername: (username) => this.setTikTokUsername(username),
+      refreshSession: () => this.refreshLiveSession(),
+      resetAssignments: () => this.resetAiAssignments(),
       mockCommand: (username, command) => this.applyCommand(username, command),
       mockGift: (value = 10) => this.applyGift(value),
     };
@@ -358,6 +361,9 @@ class BanballScene extends Phaser.Scene {
     keyboard.on("keydown-FOUR", () => this.mode === "options" ? this.setDifficulty(4) : this.applyCommand("goober42", "!throw"));
     keyboard.on("keydown-FIVE", () => {
       if (this.mode === "options") this.setDifficulty(5);
+    });
+    keyboard.on("keydown-R", () => {
+      if (this.mode === "playing") this.refreshLiveSession();
     });
     keyboard.on("keydown-G", () => this.applyGift(20));
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.beginThrowDrag(pointer));
@@ -561,10 +567,10 @@ class BanballScene extends Phaser.Scene {
       tint: 0xffffff,
     };
     this.aiPlayers = [
-      this.createAi("ai_1", "pixelgoat", 1010, 315, 0xff3b5f, "pixelgoat"),
-      this.createAi("ai_2", "mochi_07", 1115, 395, 0x25f4ee, "mochi_07"),
-      this.createAi("ai_3", "catnap99", 980, 535, 0xffd166, "catnap99"),
-      this.createAi("ai_4", "goober42", 1250, 500, 0x9b5de5, "goober42"),
+      this.createAi("ai_1", "", 1010, 315, 0xff3b5f, null),
+      this.createAi("ai_2", "", 1115, 395, 0x25f4ee, null),
+      this.createAi("ai_3", "", 980, 535, 0xffd166, null),
+      this.createAi("ai_4", "", 1250, 500, 0x9b5de5, null),
     ];
     this.balls = [
       this.createBall("ball_1", POLICIES[0], 525, 330, 0, 0),
@@ -607,6 +613,7 @@ class BanballScene extends Phaser.Scene {
   private showMenu() {
     this.mode = "menu";
     this.hideUsernameInput();
+    this.hideResetAssignmentsButton();
     this.clearMenu();
     this.textLayer?.removeAll(true);
     this.uiLayer?.removeAll(true);
@@ -622,6 +629,7 @@ class BanballScene extends Phaser.Scene {
 
   private showOptions() {
     this.mode = "options";
+    this.hideResetAssignmentsButton();
     this.clearMenu();
     this.environmentLayer?.removeAll(true);
     this.redraw();
@@ -650,7 +658,8 @@ class BanballScene extends Phaser.Scene {
 
   private setTikTokUsername(username: string) {
     const clean = username.replace(/^@+/, "").replace(/[^a-zA-Z0-9_.]/g, "").slice(0, 24);
-    this.tiktokUsername = clean || "streamer";
+    this.tiktokUsername = clean;
+    this.streamConnected = false;
     if (this.usernameInput && this.usernameInput.value !== this.tiktokUsername) {
       this.usernameInput.value = this.tiktokUsername;
     }
@@ -665,11 +674,13 @@ class BanballScene extends Phaser.Scene {
       input.maxLength = 24;
       input.spellcheck = false;
       input.autocomplete = "off";
+      input.placeholder = "streamer username";
       input.setAttribute("aria-label", "TikTok username");
       input.addEventListener("input", () => {
         const clean = input.value.replace(/^@+/, "").replace(/[^a-zA-Z0-9_.]/g, "").slice(0, 24);
         if (input.value !== clean) input.value = clean;
-        this.tiktokUsername = clean || "streamer";
+        this.tiktokUsername = clean;
+        this.streamConnected = false;
       });
       input.addEventListener("keydown", (event) => {
         event.stopPropagation();
@@ -691,6 +702,45 @@ class BanballScene extends Phaser.Scene {
     if (this.usernameInput) this.usernameInput.style.display = "none";
   }
 
+  private ensureResetAssignmentsButton() {
+    if (!this.resetAssignmentsButton) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "banball-reset-ai-button";
+      button.textContent = "RESET AI";
+      button.addEventListener("click", () => this.resetAiAssignments());
+      document.body.appendChild(button);
+      this.resetAssignmentsButton = button;
+    }
+    this.syncResetAssignmentsButtonBounds();
+  }
+
+  private hideResetAssignmentsButton() {
+    if (this.resetAssignmentsButton) this.resetAssignmentsButton.style.display = "none";
+  }
+
+  private syncResetAssignmentsButtonBounds() {
+    if (!this.resetAssignmentsButton) return;
+    if (this.mode !== "playing" || !this.streamConnected) {
+      this.resetAssignmentsButton.style.display = "none";
+      return;
+    }
+    const canvas = this.game.canvas;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width / WIDTH;
+    const scaleY = rect.height / HEIGHT;
+    const x = 955;
+    const y = 74;
+    const w = 144;
+    const h = 34;
+    this.resetAssignmentsButton.style.display = "block";
+    this.resetAssignmentsButton.style.left = `${rect.left + x * scaleX}px`;
+    this.resetAssignmentsButton.style.top = `${rect.top + y * scaleY}px`;
+    this.resetAssignmentsButton.style.width = `${w * scaleX}px`;
+    this.resetAssignmentsButton.style.height = `${h * scaleY}px`;
+    this.resetAssignmentsButton.style.fontSize = `${Math.max(11, 17 * scaleY)}px`;
+  }
+
   private syncUsernameInputBounds() {
     if (!this.usernameInput || this.mode !== "options") return;
     const canvas = this.game.canvas;
@@ -708,6 +758,29 @@ class BanballScene extends Phaser.Scene {
     this.usernameInput.style.fontSize = `${Math.max(12, 22 * scaleY)}px`;
   }
 
+  private refreshLiveSession() {
+    if (!this.tiktokUsername) {
+      this.streamConnected = false;
+      this.showMenu();
+      return;
+    }
+    this.streamConnected = true;
+    this.addFeed(this.tiktokUsername, "connected", "#25f4ee");
+    this.ensureResetAssignmentsButton();
+    if (this.mode === "playing") this.redraw();
+  }
+
+  private resetAiAssignments() {
+    if (!this.streamConnected) return;
+    for (const ai of this.aiPlayers) {
+      ai.assignedViewer = null;
+      ai.name = "";
+    }
+    this.addFeed(this.tiktokUsername || "host", "reset slots", "#25f4ee");
+    this.rebuildSprites();
+    if (this.mode === "playing") this.redraw();
+  }
+
   private startGame() {
     this.mode = "playing";
     this.hideUsernameInput();
@@ -717,12 +790,14 @@ class BanballScene extends Phaser.Scene {
     this.alertText = "Restricted: Harassment Policy";
     this.alertColor = 0xff3b5f;
     this.alertUntil = 2400;
+    this.syncResetAssignmentsButtonBounds();
     this.redraw();
   }
 
   private showGameOver(winner: "human" | "ai") {
     this.mode = "gameover";
     this.hideUsernameInput();
+    this.hideResetAssignmentsButton();
     this.winner = winner;
     this.clearMenu();
     this.redraw();
@@ -845,11 +920,17 @@ class BanballScene extends Phaser.Scene {
     body.setScale(player.team === "human" ? 1.6 : 1.28);
     body.setOrigin(0.5, 0.72);
     body.setTint(player.team === "human" ? 0xffffff : 0xffffff);
+    const labelText = player.team === "human" ? player.name : player.assignedViewer ? player.name : "OPEN";
+    const labelColor = player.team === "human"
+      ? "#ff3b5f"
+      : player.assignedViewer
+        ? `#${player.tint.toString(16).padStart(6, "0")}`
+        : "#a9b6bf";
     const labelBg = this.add.graphics();
-    const label = this.add.text(0, player.team === "human" ? -76 : -67, player.name, {
+    const label = this.add.text(0, player.team === "human" ? -76 : -67, labelText, {
       fontFamily: '"Courier New", monospace',
       fontSize: player.team === "human" ? "22px" : "16px",
-      color: player.team === "human" ? "#ff3b5f" : `#${player.tint.toString(16).padStart(6, "0")}`,
+      color: labelColor,
       fontStyle: "bold",
     }).setOrigin(0.5);
     labelBg.fillStyle(0x050505, 0.96);
@@ -1287,6 +1368,7 @@ class BanballScene extends Phaser.Scene {
   }
 
   private applyCommand(username: string, command: string) {
+    if (!this.streamConnected) return;
     const normalized = command.startsWith("!") ? command : `!${command}`;
     const assigned = this.aiPlayers.find((ai) => ai.assignedViewer === username);
     if (normalized === "!play") {
@@ -1315,6 +1397,7 @@ class BanballScene extends Phaser.Scene {
   }
 
   private applyGift(value: number) {
+    if (!this.streamConnected) return;
     this.giftProgress += value;
     while (this.giftProgress >= this.appealGiftThreshold) {
       this.appeals += 1;
@@ -1518,7 +1601,7 @@ class BanballScene extends Phaser.Scene {
     this.drawPlusBox(g, 218, 74);
 
     this.drawSessionBanner(g);
-    this.drawCommandFeed(g);
+    if (this.streamConnected) this.drawCommandFeed(g);
     this.drawHostPanel(g);
     this.drawPolicyLegend(g);
     this.drawScorePlate(g);
@@ -1553,13 +1636,32 @@ class BanballScene extends Phaser.Scene {
     g.lineBetween(x + w - 42, y, x + w, y);
     g.lineBetween(x + w, y, x + w, y + h);
     g.lineBetween(x + w - 42, y + h, x + w, y + h);
-    g.fillStyle(0xff3b5f, 1);
+    if (!this.tiktokUsername) {
+      g.fillStyle(0xffd166, 1);
+      g.fillCircle(x + 88, y + 30, 11);
+      this.addHudText("ADD USERNAME IN OPTIONS", x + 122, y + 18, 27, "#ffd166");
+      this.addHudText("Live commands stay hidden until a stream is connected", x + 126, y + 64, 16, "#a9b6bf");
+      this.addHudButton("BACK TO START", x + 500, y + 58, 178, 34, 0x25f4ee, () => this.showMenu(), 17);
+      return;
+    }
+    if (!this.streamConnected) {
+      g.fillStyle(0xff3b5f, 1);
+      g.fillCircle(x + 92, y + 30, 11);
+      this.addHudText("REFRESH SESSION", x + 126, y + 17, 32, "#ff3b5f");
+      this.addHudText(`@${this.tiktokUsername}`, x + 430, y + 20, 25, "#eefbff");
+      this.addHudText("Commands hidden until connected", x + 132, y + 66, 18, "#a9b6bf");
+      this.addHudButton("CONNECT", x + 520, y + 58, 132, 34, 0x25f4ee, () => this.refreshLiveSession(), 17);
+      return;
+    }
+    g.fillStyle(0x25f4ee, 1);
     g.fillCircle(x + 110, y + 30, 11);
-    this.addHudText("LIVE SESSION", x + 138, y + 17, 34, "#ff3b5f");
-    this.addHudText(`@${this.tiktokUsername}`, x + 430, y + 17, 28, "#ffffff");
+    this.addHudText("LIVE SESSION", x + 138, y + 17, 34, "#25f4ee");
+    const displayName = `@${this.tiktokUsername}`.slice(0, 18);
+    this.addHudText(displayName, x + 410, y + 20, 22, "#eefbff");
     const seconds = Math.floor(this.elapsed / 1000);
     const timer = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-    this.addHudText(`${timer}  |  VIEWERS: 1,247`, x + 220, y + 66, 23, "#ffffff");
+    this.addHudText(`${timer}  |  CONNECTED`, x + 150, y + 66, 21, "#eefbff");
+    this.addHudButton("RESET AI", x + 500, y + 58, 144, 34, 0xff3b5f, () => this.resetAiAssignments(), 17);
   }
 
   private drawCommandFeed(g: Phaser.GameObjects.Graphics) {
@@ -1713,6 +1815,29 @@ class BanballScene extends Phaser.Scene {
     return obj;
   }
 
+  private addHudButton(text: string, x: number, y: number, w: number, h: number, accent: number, onClick: () => void, fontSize = 16) {
+    const group = this.add.container(x, y);
+    const bg = this.add.graphics();
+    bg.fillStyle(0x030607, 0.96);
+    bg.fillRoundedRect(0, 0, w, h, 5);
+    bg.lineStyle(2, accent, 1);
+    bg.strokeRoundedRect(0, 0, w, h, 5);
+    const label = this.add.text(w / 2, h / 2, text, {
+      fontFamily: '"Courier New", monospace',
+      fontSize: `${fontSize}px`,
+      color: "#eefbff",
+      fontStyle: "bold",
+    }).setOrigin(0.5);
+    group.add([bg, label]);
+    group.setSize(w, h);
+    group.setInteractive(new Phaser.Geom.Rectangle(0, 0, w, h), Phaser.Geom.Rectangle.Contains);
+    group.on("pointerover", () => group.setScale(1.035));
+    group.on("pointerout", () => group.setScale(1));
+    group.on("pointerdown", onClick);
+    this.textLayer?.add(group);
+    return group;
+  }
+
   private snapshot(): GameSnapshot {
     return {
       mode: this.mode,
@@ -1753,6 +1878,7 @@ class BanballScene extends Phaser.Scene {
         difficulty: this.options.difficulty,
         gameSpeed: round(this.gameSpeed()),
         tiktokUsername: this.tiktokUsername,
+        streamConnected: this.streamConnected,
       },
       giftProgress: round(this.giftProgress),
       appealGiftThreshold: this.appealGiftThreshold,
