@@ -1,0 +1,314 @@
+{
+  "frames": {
+    "player_idle": {
+      "frame": {
+        "x": 6,
+        "y": 6,
+        "w": 95,
+        "h": 124
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 95,
+        "h": 124
+      },
+      "sourceSize": {
+        "w": 95,
+        "h": 124
+      }
+    },
+    "player_dodge": {
+      "frame": {
+        "x": 6,
+        "y": 136,
+        "w": 128,
+        "h": 94
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 128,
+        "h": 94
+      },
+      "sourceSize": {
+        "w": 128,
+        "h": 94
+      }
+    },
+    "player_catch": {
+      "frame": {
+        "x": 6,
+        "y": 236,
+        "w": 115,
+        "h": 124
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 115,
+        "h": 124
+      },
+      "sourceSize": {
+        "w": 115,
+        "h": 124
+      }
+    },
+    "player_throw": {
+      "frame": {
+        "x": 6,
+        "y": 366,
+        "w": 88,
+        "h": 124
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 88,
+        "h": 124
+      },
+      "sourceSize": {
+        "w": 88,
+        "h": 124
+      }
+    },
+    "player_hit": {
+      "frame": {
+        "x": 6,
+        "y": 496,
+        "w": 102,
+        "h": 124
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 102,
+        "h": 124
+      },
+      "sourceSize": {
+        "w": 102,
+        "h": 124
+      }
+    },
+    "ball_harassment": {
+      "frame": {
+        "x": 6,
+        "y": 626,
+        "w": 47,
+        "h": 48
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 47,
+        "h": 48
+      },
+      "sourceSize": {
+        "w": 47,
+        "h": 48
+      }
+    },
+    "ball_minor_safety": {
+      "frame": {
+        "x": 6,
+        "y": 680,
+        "w": 46,
+        "h": 48
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 46,
+        "h": 48
+      },
+      "sourceSize": {
+        "w": 46,
+        "h": 48
+      }
+    },
+    "ball_dangerous_acts": {
+      "frame": {
+        "x": 6,
+        "y": 734,
+        "w": 48,
+        "h": 48
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 48,
+        "h": 48
+      },
+      "sourceSize": {
+        "w": 48,
+        "h": 48
+      }
+    },
+    "ball_integrity": {
+      "frame": {
+        "x": 6,
+        "y": 788,
+        "w": 48,
+        "h": 48
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 48,
+        "h": 48
+      },
+      "sourceSize": {
+        "w": 48,
+        "h": 48
+      }
+    },
+    "ball_regulated_goods": {
+      "frame": {
+        "x": 6,
+        "y": 842,
+        "w": 47,
+        "h": 48
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 47,
+        "h": 48
+      },
+      "sourceSize": {
+        "w": 47,
+        "h": 48
+      }
+    },
+    "ball_dangerous_acts_trail": {
+      "frame": {
+        "x": 6,
+        "y": 896,
+        "w": 116,
+        "h": 52
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 116,
+        "h": 52
+      },
+      "sourceSize": {
+        "w": 116,
+        "h": 52
+      }
+    },
+    "ball_harassment_trail": {
+      "frame": {
+        "x": 6,
+        "y": 954,
+        "w": 145,
+        "h": 52
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 145,
+        "h": 52
+      },
+      "sourceSize": {
+        "w": 145,
+        "h": 52
+      }
+    },
+    "ball_minor_safety_trail": {
+      "frame": {
+        "x": 6,
+        "y": 1012,
+        "w": 143,
+        "h": 52
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 143,
+        "h": 52
+      },
+      "sourceSize": {
+        "w": 143,
+        "h": 52
+      }
+    },
+    "ball_integrity_trail": {
+      "frame": {
+        "x": 6,
+        "y": 1070,
+        "w": 110,
+        "h": 52
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 110,
+        "h": 52
+      },
+      "sourceSize": {
+        "w": 110,
+        "h": 52
+      }
+    },
+    "ball_regulated_goods_trail": {
+      "frame": {
+        "x": 6,
+        "y": 1128,
+        "w": 112,
+        "h": 52
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 112,
+        "h": 52
+      },
+      "sourceSize": {
+        "w": 112,
+        "h": 52
+      }
+    }
+  },
+  "meta": {
+    "app": "banball sprite atlas generator",
+    "image": "gameplay-sprites.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 512,
+      "h": 1186
+    },
+    "scale": "1"
+  }
+}

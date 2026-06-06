@@ -1,13 +1,18 @@
 import Phaser from "phaser";
+import { io, type Socket } from "socket.io-client";
 import "./style.css";
+import { audio } from "./audio";
 import logoUrl from "../../../assets/logo.png?url";
 import arenaBackgroundUrl from "../../../assets/arena-background-static.png?url";
+import gameplaySpritesUrl from "../../../assets/gameplay-sprites.png?url";
+import gameplaySpritesAtlasUrl from "../../../assets/gameplay-sprites.json?url";
 
 const WIDTH = 1600;
 const HEIGHT = 900;
 const COURT = { x: 150, y: 205, w: 1300, h: 535 };
 const LEFT_LIMIT = COURT.x + COURT.w / 2 - 26;
 const RIGHT_LIMIT = COURT.x + COURT.w / 2 + 26;
+const REALTIME_URL = "http://127.0.0.1:8787";
 
 type Mode = "menu" | "options" | "playing" | "gameover";
 type ActionName = "idle" | "run" | "dodge" | "catch" | "throw" | "hit" | "eliminated";
@@ -63,6 +68,27 @@ type FeedItem = {
   command: string;
   age: number;
   color: string;
+};
+
+type TikTokStatusEvent = {
+  username: string;
+  status: "disconnected" | "connecting" | "connected" | "reconnecting" | "error";
+};
+
+type TikTokChatEvent = {
+  username: string;
+  comment: string;
+};
+
+type TikTokGiftEvent = {
+  username: string;
+  giftName: string;
+  diamondValue: number;
+  repeatCount: number;
+};
+
+type TikTokMemberEvent = {
+  username: string;
 };
 
 type GameSnapshot = {
@@ -206,7 +232,10 @@ class BanballScene extends Phaser.Scene {
   private balls: Ball[] = [];
   private playerSprites = new Map<string, Phaser.GameObjects.Container>();
   private ballSprites = new Map<string, Phaser.GameObjects.Container>();
+  private socket?: Socket;
   private usernameInput?: HTMLInputElement;
+  private sessionActionButton?: HTMLButtonElement;
+  private appealButton?: HTMLButtonElement;
   private resetAssignmentsButton?: HTMLButtonElement;
   private elapsed = 0;
   private lives = 3;
@@ -226,6 +255,7 @@ class BanballScene extends Phaser.Scene {
   preload() {
     this.load.image("logo", logoUrl);
     this.load.image("arenaBackground", arenaBackgroundUrl);
+    this.load.atlas("gameplaySprites", gameplaySpritesUrl, gameplaySpritesAtlasUrl);
   }
 
   create() {
@@ -236,6 +266,8 @@ class BanballScene extends Phaser.Scene {
     this.setupInput();
     window.addEventListener("resize", () => {
       this.syncUsernameInputBounds();
+      this.syncSessionActionButtonBounds();
+      this.syncAppealButtonBounds();
       this.syncResetAssignmentsButtonBounds();
     });
     this.resetGameState();
@@ -337,6 +369,7 @@ class BanballScene extends Phaser.Scene {
       Phaser.Input.Keyboard.KeyCodes.SPACE,
     ]);
     window.addEventListener("keydown", (event) => {
+      audio.resume();
       this.heldKeys.add(event.code);
       this.heldKeys.add(event.key.toLowerCase());
       if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(event.code)) {
@@ -366,16 +399,21 @@ class BanballScene extends Phaser.Scene {
       if (this.mode === "playing") this.refreshLiveSession();
     });
     keyboard.on("keydown-G", () => this.applyGift(20));
-    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.beginThrowDrag(pointer));
+    keyboard.on("keydown-M", () => {
+      const muted = audio.toggleMuted();
+      this.addFeed("system", muted ? "sound off" : "sound on", "#25f4ee");
+      if (this.mode === "playing") this.redraw();
+    });
+    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      audio.resume();
+      this.beginThrowDrag(pointer);
+    });
     this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => this.updateThrowDrag(pointer));
     this.input.on("pointerup", (pointer: Phaser.Input.Pointer) => this.releaseThrowDrag(pointer));
     this.input.on("pointerupoutside", (pointer: Phaser.Input.Pointer) => this.releaseThrowDrag(pointer));
   }
 
   private createTextures() {
-    this.createPixelPlayerTexture("humanSprite", 0x7df9ff, 0x7a4930, 0xff3b5f);
-    this.createPixelPlayerTexture("aiSprite", 0xdffbff, 0xf1f1f1, 0xff3b5f);
-    this.createPixelPlayerTexture("aiDarkSprite", 0xdffbff, 0x22242c, 0x25f4ee);
     this.createBenchSprite();
     this.createSpectatorTexture();
     this.createBallCartTexture();
@@ -613,6 +651,8 @@ class BanballScene extends Phaser.Scene {
   private showMenu() {
     this.mode = "menu";
     this.hideUsernameInput();
+    this.hideSessionActionButton();
+    this.hideAppealButton();
     this.hideResetAssignmentsButton();
     this.clearMenu();
     this.textLayer?.removeAll(true);
@@ -629,6 +669,8 @@ class BanballScene extends Phaser.Scene {
 
   private showOptions() {
     this.mode = "options";
+    this.hideSessionActionButton();
+    this.hideAppealButton();
     this.hideResetAssignmentsButton();
     this.clearMenu();
     this.environmentLayer?.removeAll(true);
@@ -702,6 +744,87 @@ class BanballScene extends Phaser.Scene {
     if (this.usernameInput) this.usernameInput.style.display = "none";
   }
 
+  private ensureSessionActionButton() {
+    if (!this.sessionActionButton) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "banball-session-action-button";
+      button.addEventListener("click", () => {
+        if (!this.tiktokUsername) this.showMenu();
+        else if (!this.streamConnected) this.refreshLiveSession();
+      });
+      document.body.appendChild(button);
+      this.sessionActionButton = button;
+    }
+    this.syncSessionActionButtonBounds();
+  }
+
+  private hideSessionActionButton() {
+    if (this.sessionActionButton) this.sessionActionButton.style.display = "none";
+  }
+
+  private syncSessionActionButtonBounds() {
+    if (!this.sessionActionButton) return;
+    if (this.mode !== "playing" || this.streamConnected) {
+      this.sessionActionButton.style.display = "none";
+      return;
+    }
+    const canvas = this.game.canvas;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width / WIDTH;
+    const scaleY = rect.height / HEIGHT;
+    const x = this.tiktokUsername ? 975 : 955;
+    const y = 74;
+    const w = this.tiktokUsername ? 132 : 178;
+    const h = 34;
+    this.sessionActionButton.textContent = this.tiktokUsername ? "CONNECT" : "BACK TO START";
+    this.sessionActionButton.style.display = "block";
+    this.sessionActionButton.style.left = `${rect.left + x * scaleX}px`;
+    this.sessionActionButton.style.top = `${rect.top + y * scaleY}px`;
+    this.sessionActionButton.style.width = `${w * scaleX}px`;
+    this.sessionActionButton.style.height = `${h * scaleY}px`;
+    this.sessionActionButton.style.fontSize = `${Math.max(11, 17 * scaleY)}px`;
+  }
+
+  private ensureAppealButton() {
+    if (!this.appealButton) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "banball-appeal-button";
+      button.setAttribute("aria-label", "Add appeal");
+      button.title = "Add appeal";
+      button.addEventListener("click", () => this.grantAppeal());
+      document.body.appendChild(button);
+      this.appealButton = button;
+    }
+    this.syncAppealButtonBounds();
+  }
+
+  private hideAppealButton() {
+    if (this.appealButton) this.appealButton.style.display = "none";
+  }
+
+  private syncAppealButtonBounds() {
+    if (!this.appealButton) return;
+    if (this.mode !== "playing") {
+      this.appealButton.style.display = "none";
+      return;
+    }
+    const canvas = this.game.canvas;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width / WIDTH;
+    const scaleY = rect.height / HEIGHT;
+    const x = 218;
+    const y = 74;
+    const w = 34;
+    const h = 34;
+    this.appealButton.style.display = "block";
+    this.appealButton.style.left = `${rect.left + x * scaleX}px`;
+    this.appealButton.style.top = `${rect.top + y * scaleY}px`;
+    this.appealButton.style.width = `${w * scaleX}px`;
+    this.appealButton.style.height = `${h * scaleY}px`;
+  }
+
   private ensureResetAssignmentsButton() {
     if (!this.resetAssignmentsButton) {
       const button = document.createElement("button");
@@ -758,16 +881,79 @@ class BanballScene extends Phaser.Scene {
     this.usernameInput.style.fontSize = `${Math.max(12, 22 * scaleY)}px`;
   }
 
+  private connectRealtime() {
+    if (this.socket) return this.socket;
+    this.socket = io(REALTIME_URL, {
+      reconnection: true,
+      transports: ["websocket", "polling"],
+    });
+    this.socket.on("connect", () => {
+      this.socket?.emit("session:join", { sessionId: this.sessionId, role: "game" });
+    });
+    this.socket.on("connect_error", () => {
+      this.streamConnected = false;
+      this.addFeed("system", "server offline", "#ff3b5f");
+      this.alertText = "Live server unavailable";
+      this.alertColor = 0xff3b5f;
+      this.alertUntil = this.elapsed + 2200;
+      this.syncSessionActionButtonBounds();
+      this.syncResetAssignmentsButtonBounds();
+      if (this.mode === "playing") this.redraw();
+    });
+    this.socket.on("tiktok:status", (event: TikTokStatusEvent) => this.handleTikTokStatus(event));
+    this.socket.on("tiktok:chat", (event: TikTokChatEvent) => this.applyLiveChat(event.username, event.comment));
+    this.socket.on("tiktok:chatCommand", (event: { username: string; command: string }) => this.applyCommand(event.username, event.command));
+    this.socket.on("tiktok:gift", (event: TikTokGiftEvent) => this.applyGift(event.diamondValue * event.repeatCount, event.username));
+    this.socket.on("tiktok:member", (event: TikTokMemberEvent) => this.addFeed(event.username, "joined", "#a9b6bf"));
+    return this.socket;
+  }
+
+  private handleTikTokStatus(event: TikTokStatusEvent) {
+    const wasConnected = this.streamConnected;
+    this.streamConnected = event.status === "connected";
+    if (event.status === "connected" && !wasConnected) {
+      this.addFeed(event.username || this.tiktokUsername, "connected", "#25f4ee");
+      this.ensureResetAssignmentsButton();
+      audio.play("stream_connect");
+    }
+    if (event.status === "error") {
+      this.addFeed(event.username || this.tiktokUsername || "system", "live error", "#ff3b5f");
+      this.alertText = "TikTok live connection failed";
+      this.alertColor = 0xff3b5f;
+      this.alertUntil = this.elapsed + 2200;
+      audio.play("stream_disconnect");
+    }
+    if (event.status === "disconnected") {
+      this.addFeed(event.username || this.tiktokUsername || "system", "disconnected", "#ff3b5f");
+      if (wasConnected) audio.play("stream_disconnect");
+    }
+    this.syncSessionActionButtonBounds();
+    this.syncResetAssignmentsButtonBounds();
+    if (this.mode === "playing") this.redraw();
+  }
+
   private refreshLiveSession() {
     if (!this.tiktokUsername) {
       this.streamConnected = false;
       this.showMenu();
       return;
     }
-    this.streamConnected = true;
-    this.addFeed(this.tiktokUsername, "connected", "#25f4ee");
-    this.ensureResetAssignmentsButton();
+    this.streamConnected = false;
+    this.addFeed(this.tiktokUsername, "connecting", "#25f4ee");
+    this.connectRealtime().emit("tiktok:connect", { sessionId: this.sessionId, username: this.tiktokUsername });
+    this.syncSessionActionButtonBounds();
+    this.syncResetAssignmentsButtonBounds();
     if (this.mode === "playing") this.redraw();
+  }
+
+  private grantAppeal() {
+    if (this.mode !== "playing") return;
+    this.appeals = Math.min(9, this.appeals + 1);
+    audio.play("appeal");
+    this.alertText = "Appeal granted";
+    this.alertColor = 0x25f4ee;
+    this.alertUntil = this.elapsed + 1200;
+    this.redraw();
   }
 
   private resetAiAssignments() {
@@ -782,6 +968,8 @@ class BanballScene extends Phaser.Scene {
   }
 
   private startGame() {
+    audio.resume();
+    audio.play("start");
     this.mode = "playing";
     this.hideUsernameInput();
     this.clearMenu();
@@ -790,13 +978,18 @@ class BanballScene extends Phaser.Scene {
     this.alertText = "Restricted: Harassment Policy";
     this.alertColor = 0xff3b5f;
     this.alertUntil = 2400;
+    this.ensureSessionActionButton();
+    this.ensureAppealButton();
     this.syncResetAssignmentsButtonBounds();
     this.redraw();
   }
 
   private showGameOver(winner: "human" | "ai") {
     this.mode = "gameover";
+    audio.play(winner === "human" ? "win" : "lose");
     this.hideUsernameInput();
+    this.hideSessionActionButton();
+    this.hideAppealButton();
     this.hideResetAssignmentsButton();
     this.winner = winner;
     this.clearMenu();
@@ -859,9 +1052,16 @@ class BanballScene extends Phaser.Scene {
     label.setPadding(2, 2, 2, 8);
     group.add([g, label]);
     group.setInteractive(new Phaser.Geom.Rectangle(-w / 2, -h / 2, w, h), Phaser.Geom.Rectangle.Contains);
-    group.on("pointerover", () => group.setScale(1.035));
+    group.on("pointerover", () => {
+      group.setScale(1.035);
+      audio.play("ui_hover");
+    });
     group.on("pointerout", () => group.setScale(1));
-    group.on("pointerdown", onClick);
+    group.on("pointerdown", () => {
+      audio.resume();
+      audio.play("ui_click");
+      onClick();
+    });
     this.menuButtons.push(group);
     return group;
   }
@@ -916,10 +1116,8 @@ class BanballScene extends Phaser.Scene {
     const shadow = this.add.ellipse(5, 34, player.team === "human" ? 78 : 60, 18, 0x05070a, 0.44);
     const ring = this.add.ellipse(0, 28, 90, 40).setStrokeStyle(4, player.team === "human" ? 0xeefbff : player.tint, player.team === "human" ? 1 : 0.5);
     const catchRing = this.add.ellipse(0, 16, player.team === "human" ? 112 : 88, player.team === "human" ? 66 : 52).setStrokeStyle(3, 0x25f4ee, 0);
-    const body = this.add.image(0, 0, player.team === "human" ? "humanSprite" : player.id === "ai_2" || player.id === "ai_4" ? "aiDarkSprite" : "aiSprite");
-    body.setScale(player.team === "human" ? 1.6 : 1.28);
-    body.setOrigin(0.5, 0.72);
-    body.setTint(player.team === "human" ? 0xffffff : 0xffffff);
+    const body = this.add.image(0, 0, "gameplaySprites", "player_idle");
+    this.setPlayerArt(body, player, "player_idle");
     const labelText = player.team === "human" ? player.name : player.assignedViewer ? player.name : "OPEN";
     const labelColor = player.team === "human"
       ? "#ff3b5f"
@@ -927,15 +1125,20 @@ class BanballScene extends Phaser.Scene {
         ? `#${player.tint.toString(16).padStart(6, "0")}`
         : "#a9b6bf";
     const labelBg = this.add.graphics();
-    const label = this.add.text(0, player.team === "human" ? -76 : -67, labelText, {
+    const markerY = player.team === "human" ? -132 : -112;
+    const markerW = Math.max(player.team === "human" ? 66 : 62, labelText.length * (player.team === "human" ? 14 : 11) + 24);
+    const markerH = player.team === "human" ? 34 : 28;
+    const label = this.add.text(0, markerY, labelText, {
       fontFamily: '"Courier New", monospace',
       fontSize: player.team === "human" ? "22px" : "16px",
       color: labelColor,
       fontStyle: "bold",
+      align: "center",
+      fixedWidth: markerW,
     }).setOrigin(0.5);
     labelBg.fillStyle(0x050505, 0.96);
-    labelBg.fillRoundedRect(-label.width / 2 - 12, label.y - 9, label.width + 24, label.height + 12, 5);
-    const pointer = this.add.triangle(0, label.y + label.height / 2 + 13, -10, -7, 10, -7, 0, 8, player.team === "human" ? 0xff3b5f : player.tint, 1);
+    labelBg.fillRoundedRect(-markerW / 2, markerY - markerH / 2, markerW, markerH, 5);
+    const pointer = this.add.triangle(0, markerY + markerH / 2 + 8, -10, -7, 10, -7, 0, 8, player.team === "human" ? 0xff3b5f : player.tint, 1);
     group.add([shadow, ring, catchRing, body, labelBg, label, pointer]);
     group.setData("body", body);
     group.setData("ring", ring);
@@ -947,54 +1150,54 @@ class BanballScene extends Phaser.Scene {
   private createBallSprite(ball: Ball) {
     const group = this.add.container(ball.x, ball.y);
     const shadow = this.add.ellipse(0, 22, 50, 14, 0x000000, 0.34);
-    const streak = this.add.graphics();
-    const orb = this.add.graphics();
+    const art = this.add.image(0, 0, "gameplaySprites", this.ballFrame(ball, false));
     const label = this.add.text(0, -2, ball.policy.symbol, {
       fontFamily: '"Courier New", monospace',
       fontSize: "18px",
       color: "#111111",
       fontStyle: "bold",
     }).setOrigin(0.5);
-    group.add([shadow, streak, orb, label]);
-    group.setData("orb", orb);
-    group.setData("streak", streak);
+    group.add([shadow, art, label]);
+    group.setData("art", art);
+    group.setData("label", label);
     this.paintBall(group, ball);
     return group;
   }
 
   private paintBall(group: Phaser.GameObjects.Container, ball: Ball) {
-    const orb = group.getData("orb") as Phaser.GameObjects.Graphics;
-    const streak = group.getData("streak") as Phaser.GameObjects.Graphics;
-    orb.clear();
-    streak.clear();
+    const art = group.getData("art") as Phaser.GameObjects.Image;
+    const label = group.getData("label") as Phaser.GameObjects.Text;
     const speed = Math.hypot(ball.vx, ball.vy);
-    if (speed > 80) {
+    const trailing = speed > 80 && !ball.heldBy;
+    art.setFrame(this.ballFrame(ball, trailing));
+    art.setScale(1);
+    art.setOrigin(trailing ? 26 / art.width : 0.5, 0.5);
+    art.setRotation(0);
+    label.setPosition(0, -2);
+    if (trailing) {
       const angle = Math.atan2(ball.vy, ball.vx);
-      const backX = -Math.cos(angle) * 58;
-      const backY = -Math.sin(angle) * 58;
-      streak.fillStyle(ball.policy.color, 0.58);
-      streak.beginPath();
-      streak.moveTo(backX, backY);
-      streak.lineTo(backX * 0.36 - Math.sin(angle) * 18, backY * 0.36 + Math.cos(angle) * 18);
-      streak.lineTo(0, 0);
-      streak.lineTo(backX * 0.36 + Math.sin(angle) * 18, backY * 0.36 - Math.cos(angle) * 18);
-      streak.closePath();
-      streak.fillPath();
+      art.setRotation(angle - Math.PI);
+      label.setPosition(0, -1);
     }
-    orb.fillStyle(0x05070a, 0.42);
-    orb.fillCircle(5, 7, 28);
-    orb.fillStyle(ball.policy.color, 1);
-    orb.fillCircle(0, 0, 25);
-    orb.fillStyle(0xffffff, 0.2);
-    orb.fillCircle(-3, -3, 18);
-    orb.fillStyle(0xeefbff, 0.76);
-    orb.fillCircle(-9, -10, 7);
-    orb.fillStyle(0x05070a, 0.18);
-    orb.fillCircle(7, 10, 9);
-    orb.lineStyle(5, 0x05070a, 1);
-    orb.strokeCircle(0, 0, 25);
-    orb.lineStyle(2, 0xeefbff, 0.28);
-    orb.strokeCircle(-2, -2, 18);
+  }
+
+  private ballFrame(ball: Ball, trailing: boolean) {
+    return `ball_${ball.policy.id}${trailing ? "_trail" : ""}`;
+  }
+
+  private playerBaseHeight(player: Player) {
+    return player.team === "human" ? 112 : 92;
+  }
+
+  private setPlayerArt(body: Phaser.GameObjects.Image, player: Player, frame: string, xScale = 1, yScale = 1) {
+    body.setFrame(frame);
+    body.setOrigin(0.5, 0.78);
+    body.setFlipX(player.team === "ai");
+    body.setAlpha(1);
+    body.clearTint();
+    const targetHeight = frame === "player_dodge" ? this.playerBaseHeight(player) * 0.76 : this.playerBaseHeight(player);
+    const scale = targetHeight / body.height;
+    body.setScale(scale * xScale, scale * yScale);
   }
 
   private step(dt: number) {
@@ -1033,11 +1236,16 @@ class BanballScene extends Phaser.Scene {
       this.human.dodgeUntil = this.elapsed + 520;
       this.human.action = "dodge";
       this.human.actionUntil = this.elapsed + 520;
+      audio.play("dodge");
     }
     if (Phaser.Input.Keyboard.JustDown(k.catch) || Phaser.Input.Keyboard.JustDown(k.catchAlt)) {
       this.human.catchUntil = this.elapsed + 620;
       this.human.action = "catch";
       this.human.actionUntil = this.elapsed + 620;
+      audio.play("dodge", { rate: 1.3, volume: 0.6 });
+    }
+    if (Math.abs(this.human.vx) + Math.abs(this.human.vy) > 120) {
+      audio.play("step", { rate: 0.9 + Math.random() * 0.3, throttleMs: 260 });
     }
     if (!this.throwDrag.active && (Phaser.Input.Keyboard.JustDown(k.throw) || Phaser.Input.Keyboard.JustDown(k.throwAlt)) && this.elapsed > this.human.throwCooldown) {
       this.throwNearestBall(this.human, "human");
@@ -1232,6 +1440,7 @@ class BanballScene extends Phaser.Scene {
     ball.vy = (dy / len) * speed;
     ball.lastThrownBy = team;
     ball.hotUntil = this.elapsed + 2600;
+    audio.play("throw", { rate: 0.9 + Math.random() * 0.2, volume: team === "human" ? 1 : 0.8 });
     player.action = "throw";
     player.actionUntil = this.elapsed + 360;
     player.throwCooldown = this.elapsed + (team === "human" ? 450 : 1700);
@@ -1245,13 +1454,16 @@ class BanballScene extends Phaser.Scene {
       ball.y += ball.vy * dt;
       ball.vx *= 0.992;
       ball.vy *= 0.992;
+      const speed = Math.abs(ball.vx) + Math.abs(ball.vy);
       if (ball.x < COURT.x + 28 || ball.x > COURT.x + COURT.w - 28) {
         ball.vx *= -0.74;
         ball.x = clamp(ball.x, COURT.x + 28, COURT.x + COURT.w - 28);
+        if (speed > 120) audio.play("bounce", { rate: 0.85 + Math.random() * 0.3, volume: Math.min(1, speed / 500), throttleMs: 70 });
       }
       if (ball.y < COURT.y + 28 || ball.y > COURT.y + COURT.h - 28) {
         ball.vy *= -0.74;
         ball.y = clamp(ball.y, COURT.y + 28, COURT.y + COURT.h - 28);
+        if (speed > 120) audio.play("bounce", { rate: 0.85 + Math.random() * 0.3, volume: Math.min(1, speed / 500), throttleMs: 70 });
       }
       if (Math.abs(ball.vx) + Math.abs(ball.vy) < 22) {
         ball.vx = 0;
@@ -1271,6 +1483,7 @@ class BanballScene extends Phaser.Scene {
           ball.vx = 0;
           ball.vy = 0;
           ball.lastThrownBy = null;
+          audio.play("catch");
           this.human.action = "catch";
           this.human.actionUntil = this.elapsed + 500;
         } else if (this.elapsed > this.human.dodgeUntil) {
@@ -1286,12 +1499,14 @@ class BanballScene extends Phaser.Scene {
             ball.vx = 0;
             ball.vy = 0;
             ball.lastThrownBy = null;
+            audio.play("catch", { volume: 0.7 });
           } else if (ai.action !== "dodge") {
             ai.eliminated = true;
             ai.action = "eliminated";
             ball.vx *= -0.35;
             ball.vy *= -0.35;
             ball.lastThrownBy = null;
+            audio.play("elim");
             this.addFeed(ai.name, "ELIM", `#${ai.tint.toString(16).padStart(6, "0")}`);
           }
         }
@@ -1302,6 +1517,7 @@ class BanballScene extends Phaser.Scene {
   private hitHuman(ball: Ball) {
     if (this.appeals > 0) this.appeals -= 1;
     else this.lives = Math.max(0, this.lives - 1);
+    audio.play("hit");
     this.human.action = "hit";
     this.human.actionUntil = this.elapsed + 580;
     ball.vx *= -0.4;
@@ -1325,36 +1541,36 @@ class BanballScene extends Phaser.Scene {
       catchRing.setAlpha(0);
       ring.setAlpha(1);
       body.x = 0;
+      body.setRotation(0);
+      ring.setStrokeStyle(player.team === "human" ? 4 : 3, player.team === "human" ? 0xffffff : player.tint, player.team === "human" ? 1 : 0.5);
       if (player.action === "run") {
+        this.setPlayerArt(body, player, "player_idle", 1, 1 + Math.abs(phase) * 0.025);
         body.setRotation(phase * 0.06);
-        body.setScale(player.team === "human" ? 1.6 : 1.28, (player.team === "human" ? 1.6 : 1.28) * (1 + Math.abs(phase) * 0.025));
       } else if (player.action === "dodge") {
-        body.setRotation(player.team === "human" ? -0.12 : 0.12);
-        body.setScale(player.team === "human" ? 1.72 : 1.38, player.team === "human" ? 1.08 : 0.92);
+        this.setPlayerArt(body, player, "player_dodge", 1.02, 1);
+        body.setRotation(player.team === "human" ? -0.04 : 0.04);
         ring.setStrokeStyle(5, 0x25f4ee, 1);
       } else if (player.action === "catch") {
-        body.setRotation(0);
-        body.setScale(player.team === "human" ? 1.5 : 1.2, player.team === "human" ? 1.68 : 1.36);
+        this.setPlayerArt(body, player, "player_catch", 1, 1);
         ring.setStrokeStyle(6, 0x25f4ee, 1);
         catchRing.setAlpha(0.85 + Math.sin(this.elapsed / 70) * 0.12);
         catchRing.setStrokeStyle(4, 0x25f4ee, catchRing.alpha);
       } else if (player.action === "throw") {
-        body.setRotation(player.team === "human" ? -0.18 : 0.18);
-        body.setScale(player.team === "human" ? 1.72 : 1.38, player.team === "human" ? 1.52 : 1.2);
+        this.setPlayerArt(body, player, "player_throw", 1, 1);
+        body.setRotation(player.team === "human" ? -0.08 : 0.08);
         ring.setStrokeStyle(5, player.team === "human" ? 0xff3b5f : player.tint, 1);
       } else if (player.action === "hit") {
+        this.setPlayerArt(body, player, "player_hit", 1, 1);
         body.setRotation(phase * 0.16);
         body.x = Math.sin(this.elapsed / 35) * 5;
         body.setTint(this.alertColor);
       } else if (player.action === "eliminated") {
+        this.setPlayerArt(body, player, "player_hit", 1, 1);
         body.setRotation(Math.PI / 2);
         body.setAlpha(0.45);
         ring.setAlpha(0.25);
       } else {
-        body.setRotation(0);
-        body.setScale(player.team === "human" ? 1.6 : 1.28);
-        body.setTint(0xffffff);
-        ring.setStrokeStyle(player.team === "human" ? 4 : 3, player.team === "human" ? 0xffffff : player.tint, player.team === "human" ? 1 : 0.5);
+        this.setPlayerArt(body, player, "player_idle", 1, 1);
       }
       if (player.action !== "hit") body.setTint(0xffffff);
     }
@@ -1362,7 +1578,6 @@ class BanballScene extends Phaser.Scene {
       const sprite = this.ballSprites.get(ball.id);
       if (!sprite) continue;
       sprite.setPosition(ball.x, ball.y);
-      sprite.setRotation(this.elapsed / 180);
       this.paintBall(sprite, ball);
     }
   }
@@ -1376,17 +1591,20 @@ class BanballScene extends Phaser.Scene {
       if (open) {
         open.assignedViewer = username;
         open.name = username;
+        audio.play("command");
       }
     } else if (assigned && !assigned.eliminated) {
       if (normalized === "!dodge") {
         assigned.action = "dodge";
         assigned.actionUntil = this.elapsed + 650;
         assigned.dodgeUntil = this.elapsed + 650;
+        audio.play("dodge", { volume: 0.8 });
       }
       if (normalized === "!catch") {
         assigned.action = "catch";
         assigned.actionUntil = this.elapsed + 760;
         assigned.catchUntil = this.elapsed + 760;
+        audio.play("dodge", { rate: 1.3, volume: 0.5 });
       }
       if (normalized === "!throw") {
         this.throwNearestBall(assigned, "ai");
@@ -1396,17 +1614,29 @@ class BanballScene extends Phaser.Scene {
     this.rebuildSprites();
   }
 
-  private applyGift(value: number) {
+  private applyLiveChat(username: string, comment: string) {
+    const clean = comment.trim();
+    if (!clean) return;
+    if (clean.startsWith("!")) {
+      this.applyCommand(username, clean);
+      return;
+    }
+    this.addFeed(username, clean.length > 14 ? `${clean.slice(0, 13)}...` : clean, FEED_COLORS[this.feed.length % FEED_COLORS.length]);
+  }
+
+  private applyGift(value: number, username = "giftbot") {
     if (!this.streamConnected) return;
     this.giftProgress += value;
+    audio.play("gift", { throttleMs: 120 });
     while (this.giftProgress >= this.appealGiftThreshold) {
       this.appeals += 1;
       this.giftProgress -= this.appealGiftThreshold;
       this.alertText = "Appeal granted";
       this.alertColor = 0x25f4ee;
       this.alertUntil = this.elapsed + 1600;
+      audio.play("appeal");
     }
-    this.addFeed("giftbot", `+${value} gift`, "#25f4ee");
+    this.addFeed(username, `+${value} gift`, "#25f4ee");
   }
 
   private addFeed(user: string, command: string, color: string) {
@@ -1640,8 +1870,6 @@ class BanballScene extends Phaser.Scene {
       g.fillStyle(0xffd166, 1);
       g.fillCircle(x + 88, y + 30, 11);
       this.addHudText("ADD USERNAME IN OPTIONS", x + 122, y + 18, 27, "#ffd166");
-      this.addHudText("Live commands stay hidden until a stream is connected", x + 126, y + 64, 16, "#a9b6bf");
-      this.addHudButton("BACK TO START", x + 500, y + 58, 178, 34, 0x25f4ee, () => this.showMenu(), 17);
       return;
     }
     if (!this.streamConnected) {
@@ -1649,8 +1877,6 @@ class BanballScene extends Phaser.Scene {
       g.fillCircle(x + 92, y + 30, 11);
       this.addHudText("REFRESH SESSION", x + 126, y + 17, 32, "#ff3b5f");
       this.addHudText(`@${this.tiktokUsername}`, x + 430, y + 20, 25, "#eefbff");
-      this.addHudText("Commands hidden until connected", x + 132, y + 66, 18, "#a9b6bf");
-      this.addHudButton("CONNECT", x + 520, y + 58, 132, 34, 0x25f4ee, () => this.refreshLiveSession(), 17);
       return;
     }
     g.fillStyle(0x25f4ee, 1);
@@ -1661,7 +1887,6 @@ class BanballScene extends Phaser.Scene {
     const seconds = Math.floor(this.elapsed / 1000);
     const timer = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
     this.addHudText(`${timer}  |  CONNECTED`, x + 150, y + 66, 21, "#eefbff");
-    this.addHudButton("RESET AI", x + 500, y + 58, 144, 34, 0xff3b5f, () => this.resetAiAssignments(), 17);
   }
 
   private drawCommandFeed(g: Phaser.GameObjects.Graphics) {
@@ -1675,10 +1900,12 @@ class BanballScene extends Phaser.Scene {
     this.addHudText("LIVE COMMANDS", 1334, 27, 22, "#ff3b5f");
     this.feed.slice(0, 5).forEach((item, index) => {
       const y = 80 + index * 38;
+      const user = item.user.length > 12 ? `${item.user.slice(0, 10)}..` : item.user;
+      const command = item.command.length > 13 ? `${item.command.slice(0, 11)}..` : item.command;
       g.fillStyle(index % 2 === 0 ? 0x111318 : 0x080a0d, 0.42);
       g.fillRect(1286, y - 8, 284, 29);
-      this.addHudText(item.user, 1290, y, 17, item.color);
-      this.addHudText(item.command, 1398, y, 17, "#eefbff");
+      this.addHudText(user, 1290, y, 16, item.color);
+      this.addHudText(command, 1406, y, 16, "#eefbff");
       this.addHudText(`${Math.floor(item.age)}s`, 1530, y, 15, "#a9b6bf");
     });
   }

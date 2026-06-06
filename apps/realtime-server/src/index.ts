@@ -2,6 +2,7 @@ import cors from "cors";
 import express from "express";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
+import { WebcastPushConnection } from "tiktok-live-connector";
 
 type ConnectionStatus = "disconnected" | "connecting" | "connected" | "reconnecting" | "error";
 
@@ -19,6 +20,7 @@ type Session = {
 };
 
 const sessions = new Map<string, Session>();
+const liveConnections = new Map<string, { username: string; connection: WebcastPushConnection }>();
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -44,13 +46,11 @@ function publicSession(session: Session) {
   };
 }
 
-app.post("/api/sessions", (_req, res) => {
-  const sessionId = token(4);
-  const hostToken = token(12);
+function createSession(sessionId = token(4)) {
   const session: Session = {
     sessionId,
-    hostToken,
-    tiktokUsername: "streamer",
+    hostToken: token(12),
+    tiktokUsername: "",
     appealGiftThreshold: 100,
     currentGiftProgress: 0,
     assignedViewers: {},
@@ -60,11 +60,130 @@ app.post("/api/sessions", (_req, res) => {
     lastActiveAt: Date.now(),
   };
   sessions.set(sessionId, session);
+  return session;
+}
+
+function getOrCreateSession(sessionId: string) {
+  return sessions.get(sessionId) ?? createSession(sessionId);
+}
+
+function cleanUsername(username: string) {
+  return username.replace(/^@+/, "").replace(/[^a-zA-Z0-9_.]/g, "").slice(0, 24);
+}
+
+function emitSessionStatus(session: Session) {
+  io.to(`session:${session.sessionId}`).emit("session:configUpdated", publicSession(session));
+  io.to(`session:${session.sessionId}`).emit("tiktok:status", {
+    type: "tiktok:status",
+    sessionId: session.sessionId,
+    username: session.tiktokUsername,
+    status: session.tiktokConnectionStatus,
+  });
+}
+
+function disconnectTikTok(sessionId: string) {
+  const active = liveConnections.get(sessionId);
+  if (!active) return;
+  try {
+    active.connection.disconnect();
+  } catch {
+    // Connector cleanup can throw if the socket is already gone.
+  }
+  liveConnections.delete(sessionId);
+}
+
+async function connectTikTok(session: Session, username: string) {
+  const tiktokUsername = cleanUsername(username);
+  if (!tiktokUsername) {
+    session.tiktokConnectionStatus = "error";
+    emitSessionStatus(session);
+    return;
+  }
+
+  const active = liveConnections.get(session.sessionId);
+  if (active?.username === tiktokUsername && session.tiktokConnectionStatus === "connected") {
+    emitSessionStatus(session);
+    return;
+  }
+
+  disconnectTikTok(session.sessionId);
+  session.tiktokUsername = tiktokUsername;
+  session.tiktokConnectionStatus = "connecting";
+  session.lastActiveAt = Date.now();
+  emitSessionStatus(session);
+
+  const connection = new WebcastPushConnection(tiktokUsername, {
+    processInitialData: false,
+    enableExtendedGiftInfo: false,
+  });
+  liveConnections.set(session.sessionId, { username: tiktokUsername, connection });
+
+  connection.on("chat", (data) => {
+    session.lastActiveAt = Date.now();
+    const username = String(data.uniqueId ?? data.nickname ?? "viewer");
+    const comment = String(data.comment ?? "").trim();
+    if (!comment) return;
+    io.to(`session:${session.sessionId}`).emit("tiktok:chat", {
+      type: "tiktok:chat",
+      sessionId: session.sessionId,
+      username,
+      comment,
+    });
+  });
+
+  connection.on("gift", (data) => {
+    session.lastActiveAt = Date.now();
+    const diamondValue = Math.max(1, Math.round(Number(data.diamondCount ?? 1)));
+    const repeatCount = Math.max(1, Math.round(Number(data.repeatCount ?? 1)));
+    io.to(`session:${session.sessionId}`).emit("tiktok:gift", {
+      type: "tiktok:gift",
+      sessionId: session.sessionId,
+      username: String(data.uniqueId ?? data.nickname ?? "viewer"),
+      giftName: String(data.giftName ?? "Gift"),
+      diamondValue,
+      repeatCount,
+    });
+  });
+
+  connection.on("member", (data) => {
+    session.lastActiveAt = Date.now();
+    io.to(`session:${session.sessionId}`).emit("tiktok:member", {
+      type: "tiktok:member",
+      sessionId: session.sessionId,
+      username: String(data.uniqueId ?? data.nickname ?? "viewer"),
+    });
+  });
+
+  connection.on("streamEnd", () => {
+    session.tiktokConnectionStatus = "disconnected";
+    disconnectTikTok(session.sessionId);
+    emitSessionStatus(session);
+  });
+
+  connection.on("error", () => {
+    session.tiktokConnectionStatus = "error";
+    emitSessionStatus(session);
+  });
+
+  try {
+    await connection.connect();
+    session.tiktokConnectionStatus = "connected";
+    session.lastActiveAt = Date.now();
+    emitSessionStatus(session);
+  } catch {
+    disconnectTikTok(session.sessionId);
+    session.tiktokConnectionStatus = "error";
+    emitSessionStatus(session);
+  }
+}
+
+app.post("/api/sessions", (_req, res) => {
+  const session = createSession();
   res.json({
     ...publicSession(session),
-    hostToken,
-    gameUrl: `/game/${sessionId}`,
-    hostUrl: `/host/${sessionId}?token=${hostToken}`,
+    hostToken: session.hostToken,
+    gameUrl: `/game/${session.sessionId}`,
+    hostUrl: `/host/${session.sessionId}?token=${session.hostToken}`,
   });
 });
 
@@ -88,7 +207,7 @@ app.patch("/api/sessions/:sessionId/config", (req, res) => {
     return;
   }
   if (typeof req.body.tiktokUsername === "string") {
-    session.tiktokUsername = req.body.tiktokUsername.replace(/^@/, "").slice(0, 24) || "streamer";
+    session.tiktokUsername = cleanUsername(req.body.tiktokUsername);
   }
   if (Number.isFinite(req.body.appealGiftThreshold)) {
     session.appealGiftThreshold = Math.max(10, Math.min(10000, Math.round(req.body.appealGiftThreshold)));
@@ -100,14 +219,26 @@ app.patch("/api/sessions/:sessionId/config", (req, res) => {
 
 io.on("connection", (socket) => {
   socket.on("session:join", ({ sessionId, role }: { sessionId: string; role: "game" | "host" }) => {
-    const session = sessions.get(sessionId);
-    if (!session) return;
+    const session = getOrCreateSession(sessionId);
     socket.join(`session:${sessionId}`);
     session.connectedClients += 1;
     session.lastActiveAt = Date.now();
     socket.emit("session:configUpdated", publicSession(session));
     socket.data.sessionId = sessionId;
     socket.data.role = role;
+  });
+
+  socket.on("tiktok:connect", ({ sessionId, username }: { sessionId: string; username: string }) => {
+    const session = getOrCreateSession(sessionId);
+    void connectTikTok(session, username);
+  });
+
+  socket.on("tiktok:disconnect", ({ sessionId }: { sessionId: string }) => {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    disconnectTikTok(sessionId);
+    session.tiktokConnectionStatus = "disconnected";
+    emitSessionStatus(session);
   });
 
   socket.on("mock:chatCommand", (payload: { sessionId: string; username: string; command: string }) => {

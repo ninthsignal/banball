@@ -37,7 +37,8 @@ canvas {
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.85), 0 0 20px rgba(255, 59, 95, 0.42);
 }
 
-.banball-reset-ai-button {
+.banball-reset-ai-button,
+.banball-session-action-button {
   position: fixed;
   z-index: 25;
   box-sizing: border-box;
@@ -57,9 +58,35 @@ canvas {
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.86), 0 0 16px rgba(255, 59, 95, 0.34);
 }
 
+.banball-session-action-button {
+  border-color: #25f4ee;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.86), 0 0 16px rgba(37, 244, 238, 0.34);
+}
+
 .banball-reset-ai-button:hover,
-.banball-reset-ai-button:focus-visible {
+.banball-reset-ai-button:focus-visible,
+.banball-session-action-button:hover,
+.banball-session-action-button:focus-visible {
   outline: none;
   border-color: #25f4ee;
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.86), 0 0 18px rgba(37, 244, 238, 0.42);
+}
+
+.banball-appeal-button {
+  position: fixed;
+  z-index: 25;
+  box-sizing: border-box;
+  display: none;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.banball-appeal-button:hover,
+.banball-appeal-button:focus-visible {
+  outline: 2px solid #25f4ee;
+  outline-offset: 2px;
+  box-shadow: 0 0 14px rgba(37, 244, 238, 0.52);
 }
