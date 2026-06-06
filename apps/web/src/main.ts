@@ -1333,7 +1333,7 @@ class BanballScene extends Phaser.Scene {
       if (ai.heldBallId) {
         targetX = clamp(RIGHT_LIMIT + 150 + Math.sin(this.elapsed / 500 + ai.x) * 85, RIGHT_LIMIT + 70, COURT.x + COURT.w - 95);
         targetY = clamp(this.human.y + Math.sin(this.elapsed / 650 + ai.y) * 85, COURT.y + 80, COURT.y + COURT.h - 72);
-        if (this.elapsed > ai.throwCooldown && Math.random() < 0.045 * this.options.difficulty) {
+        if (!ai.assignedViewer && this.elapsed > ai.throwCooldown && Math.random() < 0.045 * this.options.difficulty) {
           this.throwNearestBall(ai, "ai");
         }
       } else if (nearestThreat) {
