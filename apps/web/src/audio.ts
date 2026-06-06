@@ -25,7 +25,8 @@ export type SoundName =
   | "appeal"
   | "stream_connect"
   | "stream_disconnect"
-  | "step";
+  | "step"
+  | "emote";
 
 interface PlayOpts {
   volume?: number;
@@ -288,6 +289,12 @@ class AudioEngine {
         this.tone("triangle", 660, t, 0.08, 0.12 * v);
         this.tone("triangle", 440, t + 0.08, 0.14, 0.13 * v);
         break;
+      case "emote": {
+        // Fallback only: a playful up-and-down giggle of blips if no sample is loaded.
+        const notes = [880, 990, 1100, 990, 1180, 1040];
+        notes.forEach((f, i) => this.tone("triangle", f * r, t + i * 0.09, 0.08, 0.12 * v));
+        break;
+      }
     }
   }
 }
