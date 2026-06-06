@@ -1376,10 +1376,67 @@ class BanballScene extends Phaser.Scene {
       const speed = seekBall && !ai.heldBallId ? 185 + this.options.difficulty * 24 : ai.action === "catch" ? 115 : 130 + this.options.difficulty * 18;
       ai.vx = (dx / len) * speed;
       ai.vy = (dy / len) * speed;
+      const sep = this.aiSeparation(ai);
+      ai.vx += sep.x;
+      ai.vy += sep.y;
       ai.x = clamp(ai.x + ai.vx * dt, RIGHT_LIMIT + 55, COURT.x + COURT.w - 72);
       ai.y = clamp(ai.y + ai.vy * dt, COURT.y + 80, COURT.y + COURT.h - 72);
       if (this.elapsed > ai.actionUntil) {
         ai.action = Math.abs(ai.vx) + Math.abs(ai.vy) > 8 ? "run" : "idle";
+      }
+    }
+    this.resolveAiSpacing();
+  }
+
+  // Steering force pushing an AI away from nearby teammates so they spread out.
+  private aiSeparation(ai: Player): { x: number; y: number } {
+    const range = 110;
+    let x = 0;
+    let y = 0;
+    for (const other of this.aiPlayers) {
+      if (other === ai || other.eliminated) continue;
+      const ox = ai.x - other.x;
+      const oy = ai.y - other.y;
+      const d = Math.hypot(ox, oy);
+      if (d > 0 && d < range) {
+        const push = ((range - d) / range) * 150;
+        x += (ox / d) * push;
+        y += (oy / d) * push;
+      }
+    }
+    return { x, y };
+  }
+
+  // Hard guarantee: separate any AI pair closer than the minimum gap.
+  private resolveAiSpacing() {
+    const minGap = 92;
+    const minX = RIGHT_LIMIT + 55;
+    const maxX = COURT.x + COURT.w - 72;
+    const minY = COURT.y + 80;
+    const maxY = COURT.y + COURT.h - 72;
+    const active = this.aiPlayers.filter((ai) => !ai.eliminated);
+    for (let pass = 0; pass < 3; pass += 1) {
+      for (let i = 0; i < active.length; i += 1) {
+        for (let j = i + 1; j < active.length; j += 1) {
+          const a = active[i];
+          const b = active[j];
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
+          let d = Math.hypot(dx, dy);
+          if (d >= minGap) continue;
+          if (d < 0.001) {
+            dx = Math.random() - 0.5;
+            dy = Math.random() - 0.5;
+            d = Math.hypot(dx, dy) || 1;
+          }
+          const shift = (minGap - d) / 2;
+          const ux = dx / d;
+          const uy = dy / d;
+          a.x = clamp(a.x - ux * shift, minX, maxX);
+          a.y = clamp(a.y - uy * shift, minY, maxY);
+          b.x = clamp(b.x + ux * shift, minX, maxX);
+          b.y = clamp(b.y + uy * shift, minY, maxY);
+        }
       }
     }
   }
@@ -1606,29 +1663,35 @@ class BanballScene extends Phaser.Scene {
   private applyCommand(username: string, command: string) {
     if (!this.streamConnected) return;
     const normalized = command.startsWith("!") ? command : `!${command}`;
-    const assigned = this.aiPlayers.find((ai) => ai.assignedViewer === username);
     if (normalized === "!play") {
+      // Claim the next open slot; a viewer can repeat !play to control several players.
       const open = this.aiPlayers.find((ai) => !ai.assignedViewer);
       if (open) {
         open.assignedViewer = username;
         open.name = username;
         audio.play("command");
       }
-    } else if (assigned && !assigned.eliminated) {
-      if (normalized === "!dodge") {
-        assigned.action = "dodge";
-        assigned.actionUntil = this.elapsed + 650;
-        assigned.dodgeUntil = this.elapsed + 650;
-        audio.play("dodge", { volume: 0.8 });
+    } else {
+      // Apply the action to every player this viewer controls.
+      const controlled = this.aiPlayers.filter((ai) => ai.assignedViewer === username && !ai.eliminated);
+      for (const assigned of controlled) {
+        if (normalized === "!dodge") {
+          assigned.action = "dodge";
+          assigned.actionUntil = this.elapsed + 650;
+          assigned.dodgeUntil = this.elapsed + 650;
+        }
+        if (normalized === "!catch") {
+          assigned.action = "catch";
+          assigned.actionUntil = this.elapsed + 760;
+          assigned.catchUntil = this.elapsed + 760;
+        }
+        if (normalized === "!throw") {
+          this.throwNearestBall(assigned, "ai");
+        }
       }
-      if (normalized === "!catch") {
-        assigned.action = "catch";
-        assigned.actionUntil = this.elapsed + 760;
-        assigned.catchUntil = this.elapsed + 760;
-        audio.play("dodge", { rate: 1.3, volume: 0.5 });
-      }
-      if (normalized === "!throw") {
-        this.throwNearestBall(assigned, "ai");
+      if (controlled.length > 0) {
+        if (normalized === "!dodge") audio.play("dodge", { volume: 0.8 });
+        else if (normalized === "!catch") audio.play("dodge", { rate: 1.3, volume: 0.5 });
       }
     }
     this.addFeed(username, normalized, FEED_COLORS[this.feed.length % FEED_COLORS.length]);
