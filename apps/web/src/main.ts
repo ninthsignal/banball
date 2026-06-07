@@ -13,7 +13,9 @@ const HEIGHT = 900;
 const COURT = { x: 150, y: 205, w: 1300, h: 535 };
 const LEFT_LIMIT = COURT.x + COURT.w / 2 - 26;
 const RIGHT_LIMIT = COURT.x + COURT.w / 2 + 26;
-const REALTIME_URL = "http://127.0.0.1:8787";
+// Configurable so the deployed app can point at a hosted realtime server.
+// Set VITE_REALTIME_URL in the Vercel project settings (must be https/wss).
+const REALTIME_URL = import.meta.env.VITE_REALTIME_URL ?? "http://127.0.0.1:8787";
 
 type Mode = "menu" | "options" | "playing" | "gameover";
 type ActionName = "idle" | "run" | "dodge" | "catch" | "throw" | "hit" | "eliminated";
