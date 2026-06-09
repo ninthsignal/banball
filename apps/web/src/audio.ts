@@ -26,7 +26,8 @@ export type SoundName =
   | "stream_connect"
   | "stream_disconnect"
   | "step"
-  | "emote";
+  | "emote"
+  | "lizard";
 
 interface PlayOpts {
   volume?: number;
@@ -293,6 +294,12 @@ class AudioEngine {
         // Fallback only: a playful up-and-down giggle of blips if no sample is loaded.
         const notes = [880, 990, 1100, 990, 1180, 1040];
         notes.forEach((f, i) => this.tone("triangle", f * r, t + i * 0.09, 0.08, 0.12 * v));
+        break;
+      }
+      case "lizard": {
+        // Fallback only: a short comedic "boing" + buzzer until a real clip is added.
+        this.tone("square", 200 * r, t, 0.18, 0.18 * v, 520 * r);
+        this.tone("sawtooth", 160 * r, t + 0.1, 0.22, 0.14 * v, 110 * r);
         break;
       }
     }

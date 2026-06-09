@@ -160,6 +160,17 @@ async function connectTikTok(session: Session, username: string) {
     });
   });
 
+  connection.on("like", (data) => {
+    session.lastActiveAt = Date.now();
+    io.to(`session:${session.sessionId}`).emit("tiktok:like", {
+      type: "tiktok:like",
+      sessionId: session.sessionId,
+      username: String(data.uniqueId ?? data.nickname ?? "viewer"),
+      likeCount: Math.max(0, Math.round(Number(data.likeCount ?? 0))),
+      totalLikeCount: Math.max(0, Math.round(Number(data.totalLikeCount ?? 0))),
+    });
+  });
+
   connection.on("streamEnd", () => {
     session.tiktokConnectionStatus = "disconnected";
     disconnectTikTok(session.sessionId);
@@ -279,6 +290,19 @@ io.on("connection", (socket) => {
       giftName: payload.giftName ?? "Rose",
       diamondValue: Math.max(1, Math.round(payload.diamondValue || 1)),
       repeatCount: Math.max(1, Math.round(payload.repeatCount || 1)),
+    });
+  });
+
+  socket.on("mock:like", (payload: { sessionId: string; username?: string; likeCount?: number; totalLikeCount: number }) => {
+    const session = sessions.get(payload.sessionId);
+    if (!session) return;
+    session.lastActiveAt = Date.now();
+    io.to(`session:${payload.sessionId}`).emit("tiktok:like", {
+      type: "tiktok:like",
+      sessionId: payload.sessionId,
+      username: payload.username ?? "viewer",
+      likeCount: Math.max(0, Math.round(payload.likeCount ?? 0)),
+      totalLikeCount: Math.max(0, Math.round(payload.totalLikeCount || 0)),
     });
   });
 

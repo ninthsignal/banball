@@ -6,6 +6,7 @@ import logoUrl from "../../../assets/logo.png?url";
 import arenaBackgroundUrl from "../../../assets/arena-background-static.png?url";
 import gameplaySpritesUrl from "../../../assets/gameplay-sprites.png?url";
 import playerEmoteUrl from "../../../assets/plater-emote.png?url";
+import lizardUrl from "../../../assets/lizard.png?url";
 import gameplaySpritesAtlasUrl from "../../../assets/gameplay-sprites.json?url";
 
 const WIDTH = 1600;
@@ -94,6 +95,12 @@ type TikTokMemberEvent = {
   username: string;
 };
 
+type TikTokLikeEvent = {
+  username: string;
+  likeCount: number;
+  totalLikeCount: number;
+};
+
 type GameSnapshot = {
   mode: Mode;
   sessionId: string;
@@ -180,12 +187,55 @@ declare global {
       resetAssignments: () => void;
       mockCommand: (username: string, command: string) => void;
       mockGift: (value?: number) => void;
+      mockLikes: (total: number) => void;
+      mockPowerup: () => void;
     };
   }
 }
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+const USERNAME_KEY = "banball.username";
+
+function cleanUsername(value: string) {
+  return value.replace(/^@+/, "").replace(/[^a-zA-Z0-9_.]/g, "").slice(0, 24);
+}
+
+function loadStoredUsername() {
+  try {
+    return cleanUsername(localStorage.getItem(USERNAME_KEY) ?? "");
+  } catch {
+    return "";
+  }
+}
+
+function saveStoredUsername(name: string) {
+  try {
+    localStorage.setItem(USERNAME_KEY, name);
+  } catch {
+    /* localStorage may be unavailable */
+  }
+}
+
+const DIFFICULTY_KEY = "banball.difficulty";
+
+function loadStoredDifficulty() {
+  try {
+    const value = Number(localStorage.getItem(DIFFICULTY_KEY));
+    return Number.isFinite(value) ? clamp(Math.round(value), 1, 8) : 2;
+  } catch {
+    return 2;
+  }
+}
+
+function saveStoredDifficulty(level: number) {
+  try {
+    localStorage.setItem(DIFFICULTY_KEY, String(level));
+  } catch {
+    /* localStorage may be unavailable */
+  }
 }
 
 function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
@@ -250,17 +300,28 @@ class BanballScene extends Phaser.Scene {
   private alertColor = 0xff3b5f;
   private alertUntil = 2600;
   private winner: "human" | "ai" | null = null;
+  private humanWins = 0;
+  private chatWins = 0;
+  private likeTotal = 0;
+  private likesAwarded = 0;
+  private chatArmed = false;
+  private extraBallCounter = 0;
+  private static readonly LIKES_PER_POWERUP = 5000;
   private emoteUntil = 0;
-  private tiktokUsername = "";
+  private lizardSprite?: Phaser.GameObjects.Image;
+  private lizardPressUntil = 0;
+  private tiktokUsername = loadStoredUsername();
   private streamConnected = false;
   private readonly sessionId = sessionIdFromPath();
-  private readonly options = { sfx: true, difficulty: 2 };
+  private readonly options = { sfx: true, difficulty: loadStoredDifficulty() };
+  private readonly debug = new URLSearchParams(window.location.search).has("debug");
 
   preload() {
     this.load.image("logo", logoUrl);
     this.load.image("arenaBackground", arenaBackgroundUrl);
     this.load.atlas("gameplaySprites", gameplaySpritesUrl, gameplaySpritesAtlasUrl);
     this.load.image("playerEmote", playerEmoteUrl);
+    this.load.spritesheet("lizard", lizardUrl, { frameWidth: 469, frameHeight: 374 });
   }
 
   create() {
@@ -278,6 +339,31 @@ class BanballScene extends Phaser.Scene {
     this.resetGameState();
     this.showMenu();
     this.installTestHooks();
+    this.createDebugControls();
+  }
+
+  // Only rendered when the URL has ?debug — quick triggers for the chat power-ups.
+  private createDebugControls() {
+    if (!this.debug) return;
+    const panel = document.createElement("div");
+    panel.style.cssText =
+      "position:fixed;top:12px;left:12px;z-index:9999;display:flex;flex-direction:column;gap:8px;";
+    const makeButton = (label: string, onClick: () => void) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.style.cssText =
+        "font:bold 13px 'Courier New',monospace;color:#04181c;background:#25f4ee;border:2px solid #ff3b5f;" +
+        "border-radius:8px;padding:8px 12px;cursor:pointer;letter-spacing:1px;";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        onClick();
+      });
+      panel.appendChild(button);
+    };
+    makeButton("DEBUG: +5K LIKES", () => this.applyLikes(this.likeTotal + BanballScene.LIKES_PER_POWERUP));
+    makeButton("DEBUG: !POWERUP", () => this.chatPowerupThrow());
+    document.body.appendChild(panel);
   }
 
   update(_time: number, deltaMs: number) {
@@ -306,11 +392,14 @@ class BanballScene extends Phaser.Scene {
       resetAssignments: () => this.resetAiAssignments(),
       mockCommand: (username, command) => this.applyCommand(username, command),
       mockGift: (value = 10) => this.applyGift(value),
+      mockLikes: (total) => this.applyLikes(total),
+      mockPowerup: () => this.chatPowerupThrow(),
     };
   }
 
   private gameSpeed() {
-    return 0.78 + this.options.difficulty * 0.1;
+    // Level 1 ≈ 0.95x, level 8 = 2.0x.
+    return 0.8 + this.options.difficulty * 0.15;
   }
 
   private setupLayers() {
@@ -328,6 +417,12 @@ class BanballScene extends Phaser.Scene {
     this.playersLayer.setDepth(20);
     this.effectsLayer = this.add.container(0, 0);
     this.effectsLayer.setDepth(40);
+    // Sideline lizard mascot: frame 1 = idle (default), frame 0 = button slam.
+    this.lizardSprite = this.add.image(1120, 898, "lizard", 1);
+    this.lizardSprite.setOrigin(0.5, 1);
+    this.lizardSprite.setScale(140 / this.lizardSprite.height);
+    this.lizardSprite.setDepth(5);
+    this.lizardSprite.setVisible(false);
     this.hudLayer = this.add.graphics();
     this.hudLayer.setDepth(100);
     this.textLayer = this.add.container(0, 0);
@@ -394,7 +489,7 @@ class BanballScene extends Phaser.Scene {
       else if (this.mode === "gameover") this.showMenu();
     });
     keyboard.on("keydown-ONE", () => this.mode === "options" ? this.setDifficulty(1) : this.triggerEmote());
-    keyboard.on("keydown-TWO", () => this.mode === "options" ? this.setDifficulty(2) : this.applyCommand("mochi_07", "!dodge"));
+    keyboard.on("keydown-TWO", () => this.mode === "options" ? this.setDifficulty(2) : this.triggerLizard());
     keyboard.on("keydown-THREE", () => this.mode === "options" ? this.setDifficulty(3) : this.applyCommand("catnap99", "!catch"));
     keyboard.on("keydown-FOUR", () => this.mode === "options" ? this.setDifficulty(4) : this.applyCommand("goober42", "!throw"));
     keyboard.on("keydown-FIVE", () => {
@@ -677,6 +772,8 @@ class BanballScene extends Phaser.Scene {
   private showMenu() {
     this.mode = "menu";
     this.emoteUntil = 0;
+    this.lizardPressUntil = 0;
+    this.lizardSprite?.setVisible(false);
     this.hideUsernameInput();
     this.hideSessionActionButton();
     this.hideAppealButton();
@@ -707,9 +804,9 @@ class BanballScene extends Phaser.Scene {
     this.addMenuText("OPTIONS", 800, 330, 44, "#25f4ee", "#000000");
     this.addMenuText("DIFFICULTY", 800, 392, 24, "#ffffff");
     this.addMenuText("AI SMARTNESS + GAME SPEED", 800, 424, 16, "#a9a9b3");
-    for (let i = 1; i <= 5; i += 1) {
+    for (let i = 1; i <= 8; i += 1) {
       const active = i === this.options.difficulty;
-      this.addMenuButton(String(i), 650 + (i - 1) * 75, 472, 56, 50, active ? 0xff3b5f : 0x25f4ee, () => this.setDifficulty(i));
+      this.addMenuButton(String(i), 555 + (i - 1) * 70, 472, 56, 48, active ? 0xff3b5f : 0x25f4ee, () => this.setDifficulty(i), 24);
     }
     this.addMenuText(`SPEED x${this.gameSpeed().toFixed(2)}`, 800, 522, 18, "#25f4ee");
     this.addMenuText("TIKTOK USERNAME", 800, 552, 18, "#25f4ee");
@@ -721,13 +818,15 @@ class BanballScene extends Phaser.Scene {
   }
 
   private setDifficulty(difficulty: number) {
-    this.options.difficulty = clamp(Math.round(difficulty), 1, 5);
+    this.options.difficulty = clamp(Math.round(difficulty), 1, 8);
+    saveStoredDifficulty(this.options.difficulty);
     if (this.mode === "options") this.showOptions();
   }
 
   private setTikTokUsername(username: string) {
-    const clean = username.replace(/^@+/, "").replace(/[^a-zA-Z0-9_.]/g, "").slice(0, 24);
+    const clean = cleanUsername(username);
     this.tiktokUsername = clean;
+    saveStoredUsername(clean);
     this.streamConnected = false;
     if (this.usernameInput && this.usernameInput.value !== this.tiktokUsername) {
       this.usernameInput.value = this.tiktokUsername;
@@ -746,9 +845,10 @@ class BanballScene extends Phaser.Scene {
       input.placeholder = "streamer username";
       input.setAttribute("aria-label", "TikTok username");
       input.addEventListener("input", () => {
-        const clean = input.value.replace(/^@+/, "").replace(/[^a-zA-Z0-9_.]/g, "").slice(0, 24);
+        const clean = cleanUsername(input.value);
         if (input.value !== clean) input.value = clean;
         this.tiktokUsername = clean;
+        saveStoredUsername(clean);
         this.streamConnected = false;
       });
       input.addEventListener("keydown", (event) => {
@@ -932,6 +1032,7 @@ class BanballScene extends Phaser.Scene {
     this.socket.on("tiktok:chatCommand", (event: { username: string; command: string }) => this.applyCommand(event.username, event.command));
     this.socket.on("tiktok:gift", (event: TikTokGiftEvent) => this.applyGift(event.diamondValue * event.repeatCount, event.username));
     this.socket.on("tiktok:member", (event: TikTokMemberEvent) => this.addFeed(event.username, "joined", "#a9b6bf"));
+    this.socket.on("tiktok:like", (event: TikTokLikeEvent) => this.applyLikes(event.totalLikeCount));
     return this.socket;
   }
 
@@ -999,6 +1100,8 @@ class BanballScene extends Phaser.Scene {
     audio.play("start");
     this.mode = "playing";
     this.emoteUntil = 0;
+    this.lizardPressUntil = 0;
+    this.chatArmed = false;
     this.hideUsernameInput();
     this.clearMenu();
     this.resetGameState();
@@ -1014,7 +1117,11 @@ class BanballScene extends Phaser.Scene {
 
   private showGameOver(winner: "human" | "ai") {
     this.mode = "gameover";
+    if (winner === "human") this.humanWins += 1;
+    else this.chatWins += 1;
     this.emoteUntil = 0;
+    this.lizardPressUntil = 0;
+    this.lizardSprite?.setVisible(false);
     audio.play(winner === "human" ? "win" : "lose");
     this.hideUsernameInput();
     this.hideSessionActionButton();
@@ -1025,7 +1132,7 @@ class BanballScene extends Phaser.Scene {
     this.redraw();
     const label = winner === "human" ? "You're an absolute legend" : "STREAM RESTRICTED";
     this.addMenuText(label, 800, 408, 58, winner === "human" ? "#25f4ee" : "#ff3b5f", "#000000");
-    this.addMenuText(winner === "human" ? "AI TEAM ELIMINATED" : "NO LIVES OR APPEALS LEFT", 800, 472, 24, "#ffffff");
+    this.addMenuText(winner === "human" ? "CHAT ELIMINATED" : "NO LIVES OR APPEALS LEFT", 800, 472, 24, "#ffffff");
     this.addMenuButton("RESTART", 800, 590, 250, 58, 0xff3b5f, () => this.startGame());
     this.addMenuButton("MENU", 800, 670, 220, 52, 0x25f4ee, () => this.showMenu());
   }
@@ -1180,33 +1287,23 @@ class BanballScene extends Phaser.Scene {
     const group = this.add.container(ball.x, ball.y);
     const shadow = this.add.ellipse(0, 22, 50, 14, 0x000000, 0.34);
     const art = this.add.image(0, 0, "gameplaySprites", this.ballFrame(ball, false));
-    const label = this.add.text(0, -2, ball.policy.symbol, {
-      fontFamily: '"Courier New", monospace',
-      fontSize: "18px",
-      color: "#111111",
-      fontStyle: "bold",
-    }).setOrigin(0.5);
-    group.add([shadow, art, label]);
+    group.add([shadow, art]);
     group.setData("art", art);
-    group.setData("label", label);
     this.paintBall(group, ball);
     return group;
   }
 
   private paintBall(group: Phaser.GameObjects.Container, ball: Ball) {
     const art = group.getData("art") as Phaser.GameObjects.Image;
-    const label = group.getData("label") as Phaser.GameObjects.Text;
     const speed = Math.hypot(ball.vx, ball.vy);
     const trailing = speed > 80 && !ball.heldBy;
     art.setFrame(this.ballFrame(ball, trailing));
     art.setScale(1);
     art.setOrigin(trailing ? 26 / art.width : 0.5, 0.5);
     art.setRotation(0);
-    label.setPosition(0, -2);
     if (trailing) {
       const angle = Math.atan2(ball.vy, ball.vx);
       art.setRotation(angle - Math.PI);
-      label.setPosition(0, -1);
     }
   }
 
@@ -1240,6 +1337,12 @@ class BanballScene extends Phaser.Scene {
     this.updateBalls(dt);
     this.handleCollisions();
     this.updateActions();
+    if (this.chatArmed) {
+      // Keep the !powerup prompt up until chat fires it.
+      this.alertText = "!powerup";
+      this.alertColor = 0x25f4ee;
+      this.alertUntil = this.elapsed + 1000;
+    }
     if (this.alertText && this.elapsed > this.alertUntil) {
       this.alertText = null;
     }
@@ -1259,7 +1362,7 @@ class BanballScene extends Phaser.Scene {
     const speed = this.elapsed < this.human.dodgeUntil ? 118 : 245;
     this.human.vx = (xAxis / len) * speed;
     this.human.vy = (yAxis / len) * speed;
-    this.human.x = clamp(this.human.x + this.human.vx * dt, COURT.x + 70, LEFT_LIMIT - 60);
+    this.human.x = clamp(this.human.x + this.human.vx * dt, COURT.x + 70, LEFT_LIMIT - 10);
     this.human.y = clamp(this.human.y + this.human.vy * dt, COURT.y + 80, COURT.y + COURT.h - 70);
     if (Phaser.Input.Keyboard.JustDown(k.dodge)) {
       this.human.dodgeUntil = this.elapsed + 520;
@@ -1290,7 +1393,14 @@ class BanballScene extends Phaser.Scene {
 
   private beginThrowDrag(pointer: Phaser.Input.Pointer) {
     if (this.mode !== "playing" || this.human.eliminated || this.elapsed < this.human.throwCooldown) return;
-    const ball = this.getHumanThrowableBall(pointer.x, pointer.y);
+    // Any spot inside the court can start the throw drag, not just on the ball.
+    if (
+      pointer.x < COURT.x || pointer.x > COURT.x + COURT.w ||
+      pointer.y < COURT.y || pointer.y > COURT.y + COURT.h
+    ) {
+      return;
+    }
+    const ball = this.getHumanThrowableBall();
     if (!ball) return;
     if (!this.human.heldBallId) {
       this.human.heldBallId = ball.id;
@@ -1337,14 +1447,11 @@ class BanballScene extends Phaser.Scene {
     this.throwBallWithVector(this.human, ball, dx, dy, power, "human");
   }
 
-  private getHumanThrowableBall(pointerX: number, pointerY: number) {
+  private getHumanThrowableBall() {
     const held = this.human.heldBallId ? this.balls.find((ball) => ball.id === this.human.heldBallId) : undefined;
-    if (held && (distance(held, { x: pointerX, y: pointerY }) < 96 || distance(this.human, { x: pointerX, y: pointerY }) < 112)) {
-      return held;
-    }
+    if (held) return held;
     return this.balls
       .filter((ball) => !ball.heldBy && Math.abs(ball.vx) < 80 && distance(ball, this.human) < 96)
-      .filter((ball) => distance(ball, { x: pointerX, y: pointerY }) < 112 || distance(this.human, { x: pointerX, y: pointerY }) < 112)
       .sort((a, b) => distance(a, this.human) - distance(b, this.human))[0];
   }
 
@@ -1362,7 +1469,7 @@ class BanballScene extends Phaser.Scene {
       if (ai.heldBallId) {
         targetX = clamp(RIGHT_LIMIT + 150 + Math.sin(this.elapsed / 500 + ai.x) * 85, RIGHT_LIMIT + 70, COURT.x + COURT.w - 95);
         targetY = clamp(this.human.y + Math.sin(this.elapsed / 650 + ai.y) * 85, COURT.y + 80, COURT.y + COURT.h - 72);
-        if (!ai.assignedViewer && this.elapsed > ai.throwCooldown && Math.random() < 0.045 * this.options.difficulty) {
+        if (!this.chatArmed && !ai.assignedViewer && this.elapsed > ai.throwCooldown && Math.random() < 0.045 * this.options.difficulty) {
           this.throwNearestBall(ai, "ai");
         }
       } else if (nearestThreat) {
@@ -1630,7 +1737,21 @@ class BanballScene extends Phaser.Scene {
     return Math.abs(Math.sin(this.elapsed / 80)) * 6;
   }
 
+  private triggerLizard() {
+    if (this.mode !== "playing") return;
+    this.lizardPressUntil = this.elapsed + 180; // brief slam frame so it can be spammed
+    audio.play("lizard");
+  }
+
+  private updateLizard() {
+    if (!this.lizardSprite) return;
+    const show = this.mode === "playing";
+    this.lizardSprite.setVisible(show);
+    if (show) this.lizardSprite.setFrame(this.elapsed < this.lizardPressUntil ? 0 : 1);
+  }
+
   private updateActions() {
+    this.updateLizard();
     const players = [this.human, ...this.aiPlayers];
     for (const player of players) {
       const sprite = this.playerSprites.get(player.id);
@@ -1700,7 +1821,10 @@ class BanballScene extends Phaser.Scene {
   private applyCommand(username: string, command: string) {
     if (!this.streamConnected) return;
     const normalized = command.startsWith("!") ? command : `!${command}`;
-    if (normalized === "!play") {
+    if (normalized === "!powerup") {
+      // Any chat member can unleash every chat ball at the human at once.
+      this.chatPowerupThrow();
+    } else if (normalized === "!play") {
       // Claim the next open slot; a viewer can repeat !play to control several players.
       const open = this.aiPlayers.find((ai) => !ai.assignedViewer);
       if (open) {
@@ -1758,6 +1882,75 @@ class BanballScene extends Phaser.Scene {
       audio.play("appeal");
     }
     this.addFeed(username, `+${value} gift`, "#25f4ee");
+  }
+
+  // Track the stream's cumulative likes; every LIKES_PER_POWERUP, the chat earns a power-up.
+  private applyLikes(total: number) {
+    if (Number.isFinite(total) && total > this.likeTotal) this.likeTotal = total;
+    if (this.mode !== "playing") return;
+    while (this.likeTotal >= (this.likesAwarded + 1) * BanballScene.LIKES_PER_POWERUP) {
+      this.likesAwarded += 1;
+      this.grantChatBalls();
+    }
+  }
+
+  // Power-up: give every active chat (AI) player a ball to hold.
+  private grantChatBalls() {
+    if (this.mode !== "playing") return;
+    let granted = 0;
+    for (const ai of this.aiPlayers) {
+      if (ai.eliminated || ai.heldBallId) continue;
+      const policy = POLICIES[Math.floor(Math.random() * POLICIES.length)];
+      this.extraBallCounter += 1;
+      const ball = this.createBall(`like_${this.extraBallCounter}`, policy, ai.x - 30, ai.y - 18, 0, 0);
+      ball.heldBy = ai.id;
+      ai.heldBallId = ball.id;
+      this.balls.push(ball);
+      granted += 1;
+    }
+    if (granted > 0) {
+      this.chatArmed = true;
+      this.alertText = "!powerup";
+      this.alertColor = 0x25f4ee;
+      this.alertUntil = this.elapsed + 1000;
+      audio.play("appeal");
+      this.addFeed("chat", `${this.likesAwarded * BanballScene.LIKES_PER_POWERUP} likes`, "#25f4ee");
+      this.rebuildSprites();
+    }
+  }
+
+  // !powerup: only the balls the chat players are holding are hurled at the human.
+  private chatPowerupThrow() {
+    if (this.mode !== "playing") return;
+    const aiIds = new Set(this.aiPlayers.map((ai) => ai.id));
+    const superSpeed = 1500;
+    let thrown = 0;
+    for (const ball of this.balls) {
+      if (!ball.heldBy || !aiIds.has(ball.heldBy)) continue; // skip free balls and the human's ball
+      const dx = this.human.x - ball.x;
+      const dy = this.human.y - ball.y;
+      const len = Math.hypot(dx, dy) || 1;
+      ball.heldBy = null;
+      ball.vx = (dx / len) * superSpeed;
+      ball.vy = (dy / len) * superSpeed;
+      ball.lastThrownBy = "ai";
+      ball.hotUntil = this.elapsed + 4000;
+      thrown += 1;
+    }
+    for (const ai of this.aiPlayers) {
+      if (ai.eliminated || !ai.heldBallId) continue;
+      ai.heldBallId = null;
+      ai.action = "throw";
+      ai.actionUntil = this.elapsed + 420;
+      ai.throwCooldown = this.elapsed + 700;
+    }
+    this.chatArmed = false;
+    if (thrown > 0) {
+      this.alertText = "Power-up: chat unleashed";
+      this.alertColor = 0xff3b5f;
+      this.alertUntil = this.elapsed + 2000;
+      audio.play("throw");
+    }
   }
 
   private addFeed(user: string, command: string, color: string) {
@@ -2063,24 +2256,23 @@ class BanballScene extends Phaser.Scene {
   }
 
   private drawScorePlate(g: Phaser.GameObjects.Graphics) {
+    // Compact, centered around x=800 and kept clear of the sideline lizard (~x1032+).
     g.fillStyle(0x020406, 0.96);
-    g.fillRoundedRect(460, 790, 320, 92, 9);
-    g.fillRoundedRect(820, 790, 320, 92, 9);
+    g.fillRoundedRect(592, 790, 180, 92, 9);
+    g.fillRoundedRect(828, 790, 180, 92, 9);
     g.fillStyle(0x05070a, 1);
-    g.fillRoundedRect(738, 776, 124, 112, 9);
+    g.fillRoundedRect(760, 776, 80, 112, 9);
     g.lineStyle(4, 0xff3b5f, 0.9);
-    g.lineBetween(500, 795, 760, 795);
+    g.lineBetween(610, 795, 752, 795);
     g.lineStyle(4, 0x25f4ee, 0.9);
-    g.lineBetween(840, 795, 1100, 795);
+    g.lineBetween(848, 795, 990, 795);
     g.lineStyle(1, 0xeefbff, 0.14);
-    g.strokeRoundedRect(460, 790, 680, 92, 8);
-    this.addHudText("YOU", 575, 810, 25, "#ff3b5f");
-    this.addHudText("VS", 775, 808, 50, "#eefbff");
-    this.addHudText("AI TEAM", 932, 810, 25, "#25f4ee");
-    this.addHudText("1", 585, 852, 26, "#eefbff");
-    this.addHudText(String(this.aiPlayers.filter((ai) => !ai.eliminated).length), 950, 852, 26, "#eefbff");
-    this.addHudText("0", 680, 852, 26, "#eefbff");
-    this.addHudText(String(this.aiPlayers.filter((ai) => ai.eliminated).length), 1042, 852, 26, "#eefbff");
+    g.strokeRoundedRect(592, 790, 416, 92, 8);
+    this.addHudText("YOU", 682, 814, 24, "#ff3b5f").setOrigin(0.5);
+    this.addHudText("VS", 800, 822, 42, "#eefbff").setOrigin(0.5);
+    this.addHudText("CHAT", 918, 814, 24, "#25f4ee").setOrigin(0.5);
+    this.addHudText(String(this.humanWins), 682, 856, 30, "#eefbff").setOrigin(0.5);
+    this.addHudText(String(this.chatWins), 918, 856, 30, "#eefbff").setOrigin(0.5);
   }
 
   private drawAlert(g: Phaser.GameObjects.Graphics) {
@@ -2098,9 +2290,15 @@ class BanballScene extends Phaser.Scene {
     g.fillStyle(this.alertColor, 1);
     g.fillRoundedRect(x + 22, y + 22, 58, 58, 6);
     this.addHudText("!", x + 42, y + 29, 46, "#eefbff");
+    const color = `#${this.alertColor.toString(16).padStart(6, "0")}`;
     const [first, ...rest] = (this.alertText ?? "").split(": ");
-    this.addHudText(`${first}:`, x + 100, y + 24, 24, `#${this.alertColor.toString(16).padStart(6, "0")}`);
-    this.addHudText(rest.join(": ") || "", x + 100, y + 62, 20, "#eefbff");
+    if (rest.length > 0) {
+      this.addHudText(`${first}:`, x + 100, y + 24, 24, color);
+      this.addHudText(rest.join(": "), x + 100, y + 62, 20, "#eefbff");
+    } else {
+      // Single-line alert (e.g. the persistent "!powerup" prompt) - no trailing colon.
+      this.addHudText(first, x + 100, y + 36, 30, color);
+    }
   }
 
   private drawHeart(g: Phaser.GameObjects.Graphics, x: number, y: number, color: number) {

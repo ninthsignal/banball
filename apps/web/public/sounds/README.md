@@ -38,6 +38,7 @@ Vite.
 | `appeal` | appeal granted | https://freesound.org/people/RescopicSound/sounds/750435/ |
 | `stream_connect` / `stream_disconnect` | TikTok live status | RescopicSound UI beeps |
 | `emote` | player emote (key 1) | bundled `giggle.mp3` — "Girl Giggle" by freesound_community via Pixabay (Pixabay License, no attribution required) |
+| `lizard` | sideline lizard button slam (key 2) | bundled `lizard.ogg` (user-provided clip, converted from wav) |
 
 > Check each Freesound page's license before shipping. CC0 needs no
 > attribution; CC-BY requires crediting the author.
